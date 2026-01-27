@@ -1,0 +1,17 @@
+"use client";
+
+import Link from "next/link";
+import { NavItem } from "./navigation";
+import { getCurrentUser } from "./authClient";
+
+interface Props {
+  items: NavItem[];
+}
+
+function hasAccess(rolesAllowed: string[], userRoles: string[]) {
+  return userRoles.some((role) => rolesAllowed.includes(role));
+}
+
+export default function NavigationMenu({ items }: Props) {
+  const user = getCurrentUser();
+  if (!

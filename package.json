@@ -1,0 +1,21 @@
+{
+  "name": "e-bidding-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^14.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hot-toast": "^2.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.0.2",
+    "@types/react": "19.2.7",
+    "typescript": "5.9.3"
+  }
+}

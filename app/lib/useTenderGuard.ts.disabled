@@ -1,0 +1,47 @@
+/**
+ * ⚠️ DO NOT MODIFY WITHOUT EXPLICIT APPROVAL ⚠️
+ *
+ * This file is a frozen contract (RBAC / Lifecycle / Audit / API).
+ * Changes to this file may break security, audit integrity,
+ * or legal compliance of the e-bidding system.
+ *
+ * Modify ONLY after explicit confirmation from the lead developer.
+ */
+
+"use client";
+
+import { TenderStatus } from "./tenderLifecycle";
+import { Role } from "./roles";
+import { TenderRules } from "./tenderRules";
+import { logAuditEvent } from "./api/audit.api";
+
+export function canPerformTenderAction(
+  action: keyof typeof TenderRules,
+  tenderStatus: TenderStatus,
+  userRoles: Role[]
+): boolean {
+  const rule = TenderRules[action];
+
+  const statusAllowed = rule.allowedStatuses.includes(tenderStatus);
+  const roleAllowed = userRoles.some((r) =>
+    rule.allowedRoles.includes(r)
+  );
+
+  return statusAllowed && roleAllowed;
+}
+
+export function auditBlockedAction(
+  action: keyof typeof TenderRules,
+  tenderStatus: TenderStatus,
+  userRoles: Role[]
+) {
+  logAuditEvent({
+    action: "ACCESS_DENIED",
+    entityType: "TENDER",
+    metadata: {
+      blockedAction: action,
+      tenderStatus,
+      userRoles,
+    },
+  }).catch(() => {});
+}

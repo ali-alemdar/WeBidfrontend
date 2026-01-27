@@ -1,0 +1,358 @@
+/* ==============================
+   GLOBAL SYSTEM STYLES
+   (Desktop-first / internal portal)
+   ============================== */
+
+/* -------- Theme Tokens --------
+   Switch by setting: <html data-theme="gov|enterprise">
+*/
+
+:root {
+  --radius: 12px;
+  --shadow: 0 10px 28px rgba(2, 6, 23, 0.10);
+  --shadow-soft: 0 6px 18px rgba(2, 6, 23, 0.08);
+  --focus: 0 0 0 3px rgba(37, 99, 235, 0.22);
+
+  /* Logo tokens (theme overrides) */
+  --logo-bg: #2563eb;
+  --logo-border: rgba(2, 6, 23, 0.08);
+  --logo-shadow: var(--shadow-soft);
+
+  /* defaults (overridden by theme) */
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --border: #d6dee8;
+  --text: #0f172a;
+  --muted: #475569;
+  --primary: #2563eb;
+  --primary-contrast: #ffffff;
+  --link: #2563eb;
+  --header-bg: #ffffff;
+  --footer-bg: #0b1f3b;
+  --footer-text: rgba(255, 255, 255, 0.86);
+}
+
+/* Government theme: flatter, more official, less glossy */
+html[data-theme="gov"] {
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(2, 6, 23, 0.08);
+  --shadow-soft: 0 1px 1px rgba(2, 6, 23, 0.06);
+
+  --bg: #f3f6fb;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --border: #d0d9e6;
+  --text: #0b1220;
+  --muted: #4b5563;
+
+  --primary: #1d4ed8; /* official blue (slightly deeper) */
+  --primary-contrast: #ffffff;
+  --link: #1d4ed8;
+
+  --header-bg: #ffffff;
+  --footer-bg: #0b1f3b; /* navy */
+  --footer-text: rgba(255, 255, 255, 0.86);
+
+  /* Less "brand gradient"; solid emblem */
+  --logo-bg: #0b1f3b;
+  --logo-border: rgba(255, 255, 255, 0.15);
+  --logo-shadow: none;
+}
+
+html[data-theme="enterprise"] {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --border: #e2e8f0;
+  --text: #111827;
+  --muted: #64748b;
+  --primary: #0f766e; /* teal */
+  --primary-contrast: #ffffff;
+  --link: #0f766e;
+  --header-bg: #ffffff;
+  --footer-bg: #111827;
+  --footer-text: rgba(255, 255, 255, 0.86);
+}
+
+* { box-sizing: border-box; }
+
+/* Print styles */
+@media print {
+  /* Remove default browser margins to reduce header/footer area */
+  @page {
+    margin: 0;
+  }
+
+  html, body {
+    background: #ffffff;
+    margin: 0;
+    padding: 0;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #d1d5db !important;
+  }
+
+  /* Expand main content to use the full page width */
+  section > div {
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+
+  /* Ensure internal layout content spans full width */
+  main {
+    padding: 1rem !important;
+  }
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+a {
+  text-decoration: none;
+  color: var(--link);
+}
+
+a:hover { text-decoration: underline; }
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9em;
+}
+
+/* -------- UI Primitives -------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.5rem;
+}
+
+.input {
+  height: 44px;
+  padding: 0 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  outline: none;
+  font-size: 0.95rem;
+}
+
+.input:focus {
+  border-color: color-mix(in oklab, var(--primary) 60%, var(--border));
+  box-shadow: var(--focus);
+}
+
+.btn {
+  height: 32px;
+  padding: 0 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-contrast);
+}
+
+/* Submission actions: force consistent blue regardless of theme */
+.btn-submit {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+/* Disabled buttons should look disabled (grey), not just faded */
+.btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+  background: #e5e7eb;
+  border-color: #d1d5db;
+  color: #6b7280;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--primary) 22%, var(--border));
+  background: color-mix(in oklab, var(--primary) 8%, var(--surface));
+  color: color-mix(in oklab, var(--text) 84%, var(--muted));
+  font-size: 12px;
+}
+
+/* -------- Homepage Layout (Desktop) -------- */
+
+.homepage {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+}
+
+.home-shell {
+  width: 1220px;
+  max-width: 1220px;
+}
+
+.home-header {
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--logo-bg);
+  border: 1px solid var(--logo-border);
+  box-shadow: var(--logo-shadow);
+}
+
+.brand-title {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.brand-sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.home-main {
+  padding: 2.25rem 1.5rem 1.5rem;
+  /* keep it formal: flat background instead of a glossy gradient */
+  background: var(--bg);
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 0.65fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 30px;
+  letter-spacing: -0.02em;
+}
+
+.section-text {
+  margin-top: 0.75rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.tile {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.95rem;
+  background: var(--surface);
+}
+
+.tile-title { font-weight: 750; }
+.tile-sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+.notice {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--primary) 25%, var(--border));
+  background: color-mix(in oklab, var(--primary) 6%, var(--surface));
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.footer {
+  background: var(--footer-bg);
+  color: var(--footer-text);
+  padding: 1rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.footer a { color: rgba(255, 255, 255, 0.86); }
+.footer a:hover { color: white; }
+
+.status {
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status.DONE {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status.IN_PROGRESS {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.status.PENDING {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.status.LOCKED {
+  background: #fee2e2;
+  color: #7f1d1d;
+}

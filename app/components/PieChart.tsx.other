@@ -1,0 +1,112 @@
+"use client";
+
+function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180.0;
+  return {
+    x: cx + r * Math.cos(rad),
+    y: cy + r * Math.sin(rad),
+  };
+}
+
+function describeArc(cx: number, cy: number, r: number, startAngle: number, endAngle: number) {
+  const start = polarToCartesian(cx, cy, r, endAngle);
+  const end = polarToCartesian(cx, cy, r, startAngle);
+  const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+  return [
+    "M",
+    cx,
+    cy,
+    "L",
+    start.x,
+    start.y,
+    "A",
+    r,
+    r,
+    0,
+    largeArcFlag,
+    0,
+    end.x,
+    end.y,
+    "Z",
+  ].join(" ");
+}
+
+export interface PieChartSegment {
+  label: string;
+  value: number;
+  color: string;
+}
+
+export function PieChart({
+  title,
+  segments,
+}: {
+  title: string;
+  segments: PieChartSegment[];
+}) {
+  const total = segments.reduce((a, s) => a + (Number.isFinite(s.value) ? s.value : 0), 0);
+  const cx = 80;
+  const cy = 80;
+  const r = 58;
+
+  let start = 0;
+  const visible = segments.filter((s) => (s.value || 0) > 0);
+
+  const hasSingleSegment = visible.length === 1 && total > 0;
+
+  return (
+    <div className="card" style={{ boxShadow: "none", padding: 14, width: "100%" }}>
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+        <svg width="170" height="170" viewBox="0 0 170 170">
+          {total === 0 ? (
+            <circle cx={cx} cy={cy} r={r} fill="#e5e7eb" />
+          ) : hasSingleSegment ? (
+            // Special case: one segment -> draw a full circle so the pie doesn't disappear.
+            <circle cx={cx} cy={cy} r={r} fill={visible[0].color} />
+          ) : (
+            <g transform={`rotate(-90 ${cx} ${cy})`}>
+              {visible.map((s, idx) => {
+                const v = s.value || 0;
+                const angle = (v / total) * 360;
+                const end = start + angle;
+                const d = describeArc(cx, cy, r, start, end);
+                start = end;
+                return <path key={idx} d={d} fill={s.color} />;
+              })}
+            </g>
+          )}
+          <circle cx={cx} cy={cy} r={r - 30} fill="#ffffff" />
+          <text x={cx} y={cy - 4} textAnchor="middle" style={{ fontSize: 22, fontWeight: 900, fill: "#111827" }}>
+            {total}
+          </text>
+          <text x={cx} y={cy + 18} textAnchor="middle" style={{ fontSize: 11, fontWeight: 700, fill: "#6b7280" }}>
+            total
+          </text>
+        </svg>
+
+        <div style={{ display: "grid", gap: 8, width: "100%" }}>
+          {segments.map((s) => (
+            <div key={s.label} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 800,
+                    fontSize: 12,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={s.label}
+                >
+                  {s.label}
+                </div>
+              </div>
+              <div style={{ fontWeight: 900 }}>{s.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
