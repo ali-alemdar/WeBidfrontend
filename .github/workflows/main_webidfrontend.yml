@@ -25,8 +25,7 @@ jobs:
           npm ci
           npm run build
 
-      # IMPORTANT: Upload the repo (like your working example), not a custom "deployment/" folder,
-      # and do NOT package node_modules or .deployment.
+      # Upload the repo (no custom deployment folder, no node_modules, no .deployment)
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
@@ -43,10 +42,16 @@ jobs:
         with:
           name: node-app
 
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_3C532329D9C54E408D4BF96D1328278C }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1832C94264004B83BAD24AD70EB1870D }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_48CD03A14424489386F8B5F6B16250C6 }}
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: webidfrontend
           slot-name: Production
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .
