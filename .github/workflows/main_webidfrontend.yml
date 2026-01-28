@@ -28,11 +28,27 @@ jobs:
           npm ci
           npm run build
 
+      - name: Create deployment package
+        run: |
+          mkdir deployment
+          cp -r .next deployment/
+          cp -r node_modules deployment/
+          cp -r public deployment/
+          cp -r app deployment/
+          cp -r employee deployment/
+          cp -r scripts deployment/
+          cp package*.json deployment/
+          cp tsconfig.json deployment/
+          cp next-env.d.ts deployment/
+          echo "SCM_DO_BUILD_DURING_DEPLOYMENT=false" > deployment/.deployment
+          echo "[config]" > deployment/.deployment
+          echo "SCM_DO_BUILD_DURING_DEPLOYMENT = false" >> deployment/.deployment
+
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: .
+          path: deployment/
 
   deploy:
     runs-on: ubuntu-latest
