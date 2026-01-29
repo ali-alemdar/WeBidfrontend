@@ -84,7 +84,7 @@ export default function TendersToSignPage() {
             <tbody>
               {rows.map((t: any) => (
                 <tr key={t.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td>{t.requisitionId ?? ""}</td>
+                  <td>TEN-{t.tenderNumber?.toString().padStart(5, '0')}</td>
                   <td>{t.requisition?.title || t.title || ""}</td>
                   <td>{t.status}</td>
                   <td>{t.pendingRole === "MANAGER" ? "Manager" : "Officer"}</td>

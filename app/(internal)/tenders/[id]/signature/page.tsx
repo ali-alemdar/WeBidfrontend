@@ -314,7 +314,7 @@ export default function TenderSignaturePage({ params }: Props) {
 
               {/* Summary block */}
               <div style={{ marginBottom: 12 }}>
-                <div><strong>Tender ID:</strong> {params.id}</div>
+                <div><strong>Tender ID:</strong> TEN-{form.tenderNumber?.toString().padStart(5, '0')}</div>
                 <div><strong>Requisition ID:</strong> {form.requisitionId}</div>
                 <div><strong>Department:</strong> {form.department || ""}</div>
                 <div><strong>Purpose:</strong> {form.purpose || ""}</div>

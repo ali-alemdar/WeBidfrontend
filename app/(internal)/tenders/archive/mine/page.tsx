@@ -71,8 +71,8 @@ export default function TenderArchiveMinePage() {
             <tbody>
               {rows.map((t: any) => (
                 <tr key={t.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  {/* Show business ID (requisitionId) instead of internal UUID */}
-                  <td>{t.requisitionId ?? ""}</td>
+                  {/* Show tender number instead of internal UUID */}
+                  <td>TEN-{t.tenderNumber?.toString().padStart(5, '0')}</td>
                   <td>{t.requisition?.title || t.title || ""}</td>
                   <td>{t.status === "CLOSED" ? "TENDER_REJECTED" : t.status}</td>
                   <td>{isoDate(t.createdAt)}</td>
