@@ -165,23 +165,6 @@ export default function AdminRequisitionAssignmentsPage() {
             ))}
             {!requisitions.length && !loading ? <li style={{ color: "var(--muted)" }}>No unassigned requisitions.</li> : null}
           </ul>
-
-          <h3 style={{ marginTop: 16 }}>Assigned requisitions</h3>
-          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-            {assignedRequisitions.map((r) => (
-              <li key={r.id}>
-                <button
-                  type="button"
-                  className={selectedReqId === r.id ? "btn btn-primary" : "btn"}
-                  style={{ width: "100%", justifyContent: "flex-start", marginBottom: 4 }}
-                  onClick={() => onSelectReq(r.id)}
->
-                  #{r.id} {r.title}
-                </button>
-              </li>
-            ))}
-            {!assignedRequisitions.length && !loading ? <li style={{ color: "var(--muted)" }}>No assigned requisitions.</li> : null}
-          </ul>
         </div>
 
         <div className="card" style={{ boxShadow: "none" }}>
@@ -353,59 +336,100 @@ export default function AdminRequisitionAssignmentsPage() {
               {acting === "save" ? "Saving…" : "Save assignments"}
             </button>
           </div>
-
-          <div style={{ marginTop: 16 }}>
-            <div style={{ fontWeight: 800, marginBottom: 6 }}>Assigned requisitions (summary)</div>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {assignedRequisitions.map((r) => {
-                const officerNames = officerOptions
-                  .filter((u) => (r.officerAssignments || []).some((a: any) => Number(a.userId) === Number(u.id)))
-                  .map((u) => u.fullName)
-                  .join(", ");
-                const manager = r.manager || managerOptions.find((u: any) => Number(u.id) === Number(r.managerId));
-                const managerName = manager ? manager.fullName : "None";
-                return (
-                  <li key={r.id}>
-                    #{r.id} – {r.title} – Officers: {officerNames || "None"} – Manager: {managerName}{" "}
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ padding: "2px 6px", marginLeft: 8 }}
-                      onClick={() => onSelectReq(r.id)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      style={{ padding: "2px 6px", marginLeft: 4, color: "#b91c1c" }}
-                      onClick={async () => {
-                        if (!confirm("Remove officer assignments for this requisition?")) return;
-                        try {
-                          setActing(`clear-${r.id}`);
-                          await apiPut(`/requisitions/${r.id}/officers`, {
-                            officers: [],
-                          });
-                          await load();
-                        } catch (e: any) {
-                          setError(e?.message || "Failed to clear assignments");
-                        } finally {
-                          setActing("");
-                        }
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </li>
-                );
-              })}
-              {!assignedRequisitions.length && !loading ? (
-                <li style={{ color: "var(--muted)" }}>No assigned requisitions.</li>
-              ) : null}
-            </ul>
-          </div>
         </div>
       </div>
+
+      {/* Assigned Records Table */}
+      {assignedRequisitions.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h3>Assigned Requisitions</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              width="100%"
+              cellPadding={8}
+              style={{ borderCollapse: "collapse", fontSize: 13 }}
+            >
+              <thead>
+                <tr style={{ textAlign: "left", background: "#f9fafb" }}>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 80 }}>ID</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 200 }}>Assigned Officers</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 150 }}>Assigned Manager</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 100 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignedRequisitions.map((req) => {
+                  const officers = (req.officerAssignments || [])
+                    .map((a: any) => {
+                      const officer = officerOptions.find(
+                        (u: any) => Number(u.id) === Number(a.userId)
+                      );
+                      return officer?.fullName || `User ${a.userId}`;
+                    })
+                    .join(", ");
+                  const manager = managerOptions.find(
+                    (u: any) => Number(u.id) === Number(req.managerId)
+                  );
+                  const managerName = manager ? manager.fullName : "-";
+
+                  const handleEdit = () => {
+                    onSelectReq(req.id);
+                  };
+
+                  const handleDelete = async () => {
+                    if (!confirm(`Remove assignments for ${req.title}?`)) return;
+                    try {
+                      setError("");
+                      setActing("delete");
+                      await apiPut(`/requisitions/${req.id}/officers`, {
+                        officers: [],
+                      });
+                      await load();
+                    } catch (e: any) {
+                      setError(e?.message || "Failed to remove assignment");
+                    } finally {
+                      setActing("");
+                    }
+                  };
+
+                  return (
+                    <tr
+                      key={req.id}
+                      style={{ borderBottom: "1px solid #e5e7eb" }}
+                    >
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>#{req.id}</td>
+                      <td>{req.title}</td>
+                      <td>{officers || "-"}</td>
+                      <td>{managerName}</td>
+                      <td style={{ display: "flex", gap: 4 }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleEdit}
+                          disabled={acting !== ""}
+                          style={{ fontSize: 12, padding: "4px 8px" }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleDelete}
+                          disabled={acting !== ""}
+                          style={{ fontSize: 12, padding: "4px 8px", color: "#dc2626" }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       </InternalPage>
     </RequireRoles>
   );

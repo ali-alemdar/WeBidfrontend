@@ -28,8 +28,18 @@ export default function Sidebar() {
   const isTenderOfficerRole =
     roles.includes("TENDERING_OFFICER") || roles.includes("TENDER_COMMITTEE");
   const isTenderManagerRole = roles.includes("TENDER_APPROVAL");
+  const isTenderPublicationPreparer = roles.includes("TENDER_PUBLICATION_PREPARER");
+  const isTenderPublicationManager = roles.includes("TENDER_PUBLICATION_MANAGER");
 
-  const canSeeTenders = isTenderOfficerRole || isTenderManagerRole || isSysAdmin;
+  const isAdminOnly = isSysAdmin && !canSeeRequisitions && !isTenderOfficerRole && !isTenderManagerRole && !isTenderPublicationPreparer && !isTenderPublicationManager;
+
+  const canSeeTenders = (isTenderOfficerRole || isTenderManagerRole || isSysAdmin) && !isAdminOnly;
+  const canSeeTenderPublishing =
+    (isTenderPublicationPreparer ||
+    isTenderPublicationManager ||
+    isTenderOfficerRole ||
+    isTenderManagerRole ||
+    isSysAdmin) && !isAdminOnly;
 
   const canSeeAudit = roles.includes("AUDITOR") || isSysAdmin;
 
@@ -54,13 +64,22 @@ export default function Sidebar() {
               isTenderOfficerRole || isSysAdmin
                 ? "/tenders"
                 : "/tenders/waiting-approvals",
-            label: "Tenders",
+            label: "Tender Preparation",
             // Treat bid opening / evaluation / awards as part of the Tenders main section
             match: (p) =>
               p.startsWith("/tenders") ||
               p.startsWith("/bid-opening") ||
               p.startsWith("/evaluation") ||
               p.startsWith("/awards"),
+          },
+        ]
+      : []),
+    ...(canSeeTenderPublishing
+      ? [
+          {
+            href: "/tender-publishing",
+            label: "Tender Publishing",
+            match: (p) => p.startsWith("/tender-publishing"),
           },
         ]
       : []),

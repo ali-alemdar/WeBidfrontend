@@ -17,83 +17,57 @@ function uniq(xs: string[]) {
 }
 
 function groupRoles(allRoles: RoleRow[]): RoleGroup[] {
-  const groups: Array<{ key: string; label: string; order: number; match: (name: string) => boolean }> = [
-    {
-      key: "requisition",
-      label: "Requisition",
-      order: 1,
-      match: (n) =>
-        ["REQUESTER", "REQUISITION_OFFICER", "REQUISITION_MANAGER"].includes(n),
-    },
-    {
-      key: "tendering",
-      label: "Tendering",
-      order: 2,
-      match: (n) =>
-        ["TENDERING_OFFICER", "TENDER_COMMITTEE", "TENDER_APPROVAL"].includes(n),
-    },
-    {
-      key: "tender_other",
-      label: "Tender (other)",
-      order: 3,
-      match: (n) =>
-        n.startsWith("TENDER") ||
-        ["COMMITTEE_CHAIR", "EVALUATOR", "AWARD_AUTHORITY"].includes(n),
-    },
-    {
-      key: "supplier",
-      label: "Suppliers",
-      order: 4,
-      match: (n) => n.startsWith("SUPPLIER") || n.startsWith("VENDOR"),
-    },
-    {
-      key: "bidder",
-      label: "Bidder portal",
-      order: 5,
-      match: (n) => n.startsWith("BIDDER_"),
-    },
-    {
-      key: "admin",
-      label: "Admin / Audit",
-      order: 6,
-      match: (n) => ["SYS_ADMIN", "AUDITOR"].includes(n),
-    },
-  ];
-
-  const buckets = new Map<string, RoleRow[]>();
-  const meta = new Map(groups.map((g) => [g.key, g]));
-
-  for (const r of allRoles) {
-    const name = String(r?.name || "").trim();
+  // Group roles by category prefix or use generic grouping
+  const groups = new Map<string, RoleRow[]>();
+  
+  for (const role of allRoles) {
+    const name = String(role?.name || "").trim();
     if (!name) continue;
-
-    const found = groups.find((g) => g.match(name));
-    const key = found ? found.key : "other";
-
-    if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key)!.push(r);
+    
+    // Determine group key from role name prefix
+    let groupKey = "Other";
+    if (name.startsWith("REQUISITION_")) groupKey = "Requisition";
+    else if (name.startsWith("TENDERING_") || ["TENDER_COMMITTEE", "TENDER_APPROVAL"].includes(name)) groupKey = "Tendering";
+    else if (name.startsWith("TENDER_PUBLICATION_")) groupKey = "Tender Publication";
+    else if (name.startsWith("TENDER_")) groupKey = "Tender";
+    else if (name.startsWith("SUPPLIER_")) groupKey = "Suppliers";
+    else if (name.startsWith("VENDOR_")) groupKey = "Vendors";
+    else if (name.startsWith("BIDDER_")) groupKey = "Bidder Portal";
+    else if (["SYS_ADMIN", "AUDITOR"].includes(name)) groupKey = "Admin";
+    else if (name === "GM") groupKey = "Management";
+    else if (name === "REQUESTER") groupKey = "Requisition";
+    
+    if (!groups.has(groupKey)) groups.set(groupKey, []);
+    groups.get(groupKey)!.push(role);
   }
-
-  const out: RoleGroup[] = [];
-
-  for (const [key, items] of Array.from(buckets.entries())) {
-    const g = meta.get(key);
-    out.push({
-      key,
-      label: g?.label || "Other",
-      items: items.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))),
+  
+  // Convert to RoleGroup array and sort
+  const groupOrder: Record<string, number> = {
+    "Requisition": 1,
+    "Tendering": 2,
+    "Tender Publication": 3,
+    "Tender": 4,
+    "Suppliers": 5,
+    "Vendors": 6,
+    "Bidder Portal": 7,
+    "Management": 8,
+    "Admin": 9,
+    "Other": 99,
+  };
+  
+  const result = Array.from(groups.entries())
+    .map(([label, items]) => ({
+      key: label.toLowerCase().replace(/ /g, "_"),
+      label,
+      items: items.sort((a, b) => String(a.name).localeCompare(String(b.name))),
+    }))
+    .sort((a, b) => {
+      const ao = groupOrder[a.label] ?? 99;
+      const bo = groupOrder[b.label] ?? 99;
+      return ao - bo;
     });
-  }
-
-  // Stable ordering (known groups first, then Other)
-  out.sort((a, b) => {
-    const ao = meta.get(a.key)?.order ?? 99;
-    const bo = meta.get(b.key)?.order ?? 99;
-    if (ao !== bo) return ao - bo;
-    return a.label.localeCompare(b.label);
-  });
-
-  return out;
+  
+  return result;
 }
 
 function RolePicker({
@@ -186,15 +160,6 @@ function RolePicker({
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<RoleRow[]>([]);
-  const ALLOWED_ROLE_NAMES = [
-    "REQUESTER",
-    "REQUISITION_OFFICER",
-    "REQUISITION_MANAGER",
-    "TENDERING_OFFICER",
-    "TENDER_COMMITTEE",
-    "TENDER_APPROVAL",
-    "SYS_ADMIN",
-  ];
   const [departments, setDepartments] = useState<DepartmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState<string>("");
@@ -245,7 +210,7 @@ export default function AdminUsersPage() {
       ]);
 
       setUsers(Array.isArray(u) ? u : []);
-      setRoles(Array.isArray(r) ? r.filter((rr: any) => ALLOWED_ROLE_NAMES.includes(String(rr?.name || ""))) : []);
+      setRoles(Array.isArray(r) ? r : []);
       setDepartments(Array.isArray(d) ? d : []);
     } catch (e: any) {
       setError(e?.message || "Failed to load users");

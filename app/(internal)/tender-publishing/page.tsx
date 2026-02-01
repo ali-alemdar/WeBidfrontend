@@ -17,7 +17,7 @@ function fmtDate(value: any) {
   }
 }
 
-export default function TendersPage() {
+export default function TenderPublishingPage() {
   const [tenders, setTenders] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
   const [expandedStatuses, setExpandedStatuses] = useState<Record<string, boolean>>({});
@@ -45,9 +45,9 @@ export default function TendersPage() {
         const allTenders = await apiGet("/tenders/admin/all");
         const allTendersArray = Array.isArray(allTenders) ? allTenders : [];
         
-        // Filter for Tender Preparation stage statuses
-        const prepStatuses = new Set(["DRAFT", "DRAFT_TENDER", "TENDER_PREP_APPROVED", "TENDER_PREP_COMPLETE", "CLOSED", "TENDER_REJECTED"]);
-        const filtered = allTendersArray.filter((t) => prepStatuses.has(String(t.status || "")));
+        // Filter for Tender Publishing stage statuses
+        const publishingStatuses = new Set(["TENDER_PREP_COMPLETE", "TENDER_PUBLICATION_PREP", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
+        const filtered = allTendersArray.filter((t) => publishingStatuses.has(String(t.status || "")));
         setTenders(filtered);
       } catch (e: any) {
         const msg = String(e?.message || "");
@@ -105,8 +105,8 @@ export default function TendersPage() {
   }, [statuses, byStatus]);
 
   return (
-    <RequireRoles anyOf={["TENDERING_OFFICER", "TENDER_APPROVAL", "SYS_ADMIN"]} title="Tenders">
-      <InternalPage title="Tender Preparation">
+    <RequireRoles anyOf={["TENDERING_OFFICER", "TENDER_APPROVAL", "SYS_ADMIN"]} title="Tender Publishing">
+      <InternalPage title="Tender Publishing">
         <div>
           <div style={{ marginBottom: 16 }}>
             <div style={{ padding: 16, background: "#f3f4f6", borderRadius: 8 }}>

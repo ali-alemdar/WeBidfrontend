@@ -33,8 +33,12 @@ export default function AdminTenderAssignmentsPage() {
       ]);
       const all = Array.isArray(tendersResp) ? tendersResp : [];
 
-      const assigned = all.filter((row) => Array.isArray((row as any).officerAssignments) && (row as any).officerAssignments.length);
-      const unassigned = all.filter((row) => !Array.isArray((row as any).officerAssignments) || (row as any).officerAssignments.length === 0);
+      // Filter for Tender Preparation stage only (exclude publishing stages)
+      const prepStatuses = new Set(["TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_PREP_APPROVED"]); 
+      const prepTenders = all.filter((t) => prepStatuses.has(String(t.status || "")));
+
+      const assigned = prepTenders.filter((row) => Array.isArray((row as any).officerAssignments) && (row as any).officerAssignments.length);
+      const unassigned = prepTenders.filter((row) => !Array.isArray((row as any).officerAssignments) || (row as any).officerAssignments.length === 0);
 
       setTenders(unassigned);
       setAssignedTenders(assigned);
@@ -160,23 +164,6 @@ export default function AdminTenderAssignmentsPage() {
               </li>
             ))}
             {!tenders.length && !loading ? <li style={{ color: "var(--muted)" }}>No unassigned tenders.</li> : null}
-          </ul>
-
-          <h3 style={{ marginTop: 16 }}>Assigned draft tenders</h3>
-          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-            {assignedTenders.map((t) => (
-              <li key={t.id}>
-                <button
-                  type="button"
-                  className={selectedTenderId === String(t.id) ? "btn btn-primary" : "btn"}
-                  style={{ width: "100%", justifyContent: "flex-start", marginBottom: 4 }}
-                  onClick={() => onSelectTender(t.id)}
-                >
-                  {t.requisition?.title || "(Untitled tender)"}
-                </button>
-              </li>
-            ))}
-            {!assignedTenders.length && !loading ? <li style={{ color: "var(--muted)" }}>No assigned tenders.</li> : null}
           </ul>
         </div>
 
@@ -357,12 +344,106 @@ export default function AdminTenderAssignmentsPage() {
           </div>
 
           <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <button className="btn btn-primary" onClick={save} disabled={acting !== "" || !selectedTenderId}>
-              {acting === "save" ? "Saving…" : "Save"}
+            <button className="btn btn-submit" onClick={save} disabled={acting !== "" || !selectedTenderId}>
+              {acting === "save" ? "Saving…" : "Save assignments"}
             </button>
           </div>
         </div>
       </div>
+
+      {/* Assigned Records Table */}
+      {assignedTenders.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <h3>Assigned Tenders</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table
+              width="100%"
+              cellPadding={8}
+              style={{ borderCollapse: "collapse", fontSize: 13 }}
+            >
+              <thead>
+                <tr style={{ textAlign: "left", background: "#f9fafb" }}>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 80 }}>ID</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 200 }}>Assigned Officers</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 150 }}>Assigned Manager</th>
+                  <th style={{ borderBottom: "1px solid #d1d5db", width: 100 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignedTenders.map((tender) => {
+                  const officers = (tender.officerAssignments || [])
+                    .map((a: any) => {
+                      const officer = officerOptions.find(
+                        (u: any) => Number(u.id) === Number(a.userId)
+                      );
+                      return officer?.fullName || `User ${a.userId}`;
+                    })
+                    .join(", ");
+                  const manager = managerOptions.find(
+                    (u: any) => Number(u.id) === Number(tender.prepManagerId)
+                  );
+                  const managerName = manager ? manager.fullName : "-";
+
+                  const handleEdit = () => {
+                    onSelectTender(tender.id);
+                  };
+
+                  const handleDelete = async () => {
+                    if (!confirm(`Remove assignments for ${tender.requisition?.title || "this tender"}?`)) return;
+                    try {
+                      setError("");
+                      setActing("delete");
+                      await apiPut(`/tenders/${tender.id}/officers`, {
+                        officers: [],
+                      });
+                      await load();
+                    } catch (e: any) {
+                      setError(e?.message || "Failed to remove assignment");
+                    } finally {
+                      setActing("");
+                    }
+                  };
+
+                  return (
+                    <tr
+                      key={tender.id}
+                      style={{ borderBottom: "1px solid #e5e7eb" }}
+                    >
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>
+                        TEN-{String(tender.tenderNumber || 0).padStart(5, "0")}
+                      </td>
+                      <td>{tender.requisition?.title || tender.title || "(Untitled)"}</td>
+                      <td>{officers || "-"}</td>
+                      <td>{managerName}</td>
+                      <td style={{ display: "flex", gap: 4 }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleEdit}
+                          disabled={acting !== ""}
+                          style={{ fontSize: 12, padding: "4px 8px" }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleDelete}
+                          disabled={acting !== ""}
+                          style={{ fontSize: 12, padding: "4px 8px", color: "#dc2626" }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       </InternalPage>
     </RequireRoles>
   );

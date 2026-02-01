@@ -36,6 +36,8 @@ export default function SecondaryNav() {
   const isCommitteeChair = roles.includes("COMMITTEE_CHAIR") || isSysAdmin;
   const isTenderOfficer = roles.includes("TENDERING_OFFICER") || isSysAdmin;
   const isTenderApproval = roles.includes("TENDER_APPROVAL") || isSysAdmin;
+  const isTenderPublicationPreparer = roles.includes("TENDER_PUBLICATION_PREPARER") || isSysAdmin;
+  const isTenderPublicationManager = roles.includes("TENDER_PUBLICATION_MANAGER") || isSysAdmin;
   const canSeeApprovalQueue = isRequisitionOfficer || isRequisitionManager || isCommitteeChair;
 
   const sections: Section[] = [
@@ -95,6 +97,22 @@ export default function SecondaryNav() {
       ],
     },
     {
+      key: "tender-publishing",
+      title: "Tender Publishing",
+      match: (p) => p.startsWith("/tender-publishing"),
+      items: () => [
+        ...((isTenderPublicationPreparer || isTenderPublicationManager)
+          ? [
+              { href: "/tender-publishing/list", label: "List" },
+              { href: "/tender-publishing/ready", label: "Ready" },
+              { href: "/tender-publishing/to-sign", label: "Tenders to sign" },
+              { href: "/tender-publishing/ready-to-publish", label: "Ready to Publish" },
+              { href: "/tender-publishing/archive", label: "Archive" },
+            ]
+          : []),
+      ],
+    },
+    {
       key: "audit",
       title: "Audit",
       match: (p) => p.startsWith("/audit"),
@@ -116,12 +134,13 @@ export default function SecondaryNav() {
           { href: "/admin/roles", label: "Roles" },
           { href: "/admin/roles/requisition-assignments", label: "Requisition officers" },
           { href: "/admin/roles/tender-assignments", label: "Tender officers" },
+          { href: "/admin/roles/tender-publishing-assignments", label: "Tender Publishing" },
           { href: "/admin/departments", label: "Departments" },
           { href: "/admin/uom", label: "UOM" },
       { href: "/admin/item-categories", label: "Item categories" },
       { href: "/admin/company", label: "Company profile" },
       { href: "/admin/currencies", label: "Currencies" },
-      { href: "[0m/admin/templates", label: "Templates" },
+      { href: "/admin/templates", label: "Templates" },
           // Unified supplier admin
           { href: "/suppliers", label: "Suppliers" },
           { href: "/suppliers/categories", label: "Supplier categories" },
@@ -130,7 +149,18 @@ export default function SecondaryNav() {
     },
   ];
 
-  const section = sections.find((s) => s.match(pathname));
+  // Do not show secondary nav on dashboard, requisitions, tenders, or tender-publishing pages
+  if (pathname === "/dashboard" || pathname === "/requisitions" || pathname === "/tenders" || pathname === "/tender-publishing") return null;
+
+  let section = sections.find((s) => s.match(pathname));
+
+  // Fallback: if no section matches the current path, but the user
+  // has Tender Publishing roles, show the Tender Publishing section
+  // so they always have a navbar like other users/managers.
+  if (!section && (isTenderPublicationPreparer || isTenderPublicationManager)) {
+    section = sections.find((s) => s.key === "tender-publishing") || null as any;
+  }
+
   if (!section) return null;
 
   const items = section.items({ pathname, isSysAdmin, isSupplierManager });

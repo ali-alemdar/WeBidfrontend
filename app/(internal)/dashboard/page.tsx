@@ -10,37 +10,44 @@ import { PieChart } from "../../components/PieChart";
 export default function EmployeeDashboardPage() {
   const [requisitions, setRequisitions] = useState<any[]>([]);
   const [tenders, setTenders] = useState<any[]>([]);
+  const [publishingTenders, setPublishingTenders] = useState<any[]>([]);
   const [error, setError] = useState<string>("");
 
   const [selectedOfficerId, setSelectedOfficerId] = useState<number | null>(null);
   const [selectedOfficerName, setSelectedOfficerName] = useState<string>("");
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
+    "Requisitions": false,
+    "Tender Preparation": false,
+    "Tender Publishing": false,
+  });
 
   const user = getCurrentUser();
   const roles = ((user as any)?.roles || []) as string[];
   const isSysAdmin = roles.includes("SYS_ADMIN");
-  const isOfficer = roles.includes("REQUISITION_OFFICER") || isSysAdmin;
-  const isManager = roles.includes("REQUISITION_MANAGER") || isSysAdmin;
-  const isTenderManager = roles.includes("TENDER_APPROVAL") || isSysAdmin;
+  const hasRequisitionOfficer = roles.includes("REQUISITION_OFFICER");
+  const hasRequisitionManager = roles.includes("REQUISITION_MANAGER");
+  const hasTenderApproval = roles.includes("TENDER_APPROVAL");
   const isRequester = roles.includes("REQUESTER");
   const hasTenderRole =
     roles.includes("TENDERING_OFFICER") ||
     roles.includes("TENDER_COMMITTEE") ||
     roles.includes("TENDER_APPROVAL");
-  const requesterOnly = isRequester && !isOfficer && !isManager && !isTenderManager && !isSysAdmin;
+  const isAdminOnly = isSysAdmin && !hasRequisitionOfficer && !hasRequisitionManager && !hasTenderApproval && !hasTenderRole && !isRequester;
+  const isOfficer = hasRequisitionOfficer || isSysAdmin;
+  const isManager = hasRequisitionManager || isSysAdmin;
+  const isTenderManager = hasTenderApproval || isSysAdmin;
+  const requesterOnly =
+    isRequester && !isOfficer && !isManager && !isTenderManager && !isSysAdmin;
+
+  const [q, setQ] = useState("");
 
   useEffect(() => {
     const load = async () => {
       try {
         setError("");
-        if (isTenderManager) {
-          const mine = await apiGet("/tenders/mine");
-          setTenders(Array.isArray(mine) ? mine : []);
-          setRequisitions([]);
-        } else if (hasTenderRole) {
-          const rows = await apiGet("/tenders");
-          setTenders(Array.isArray(rows) ? rows : []);
-          setRequisitions([]);
-        } else {
+
+        // Load requisitions
+        try {
           const [active, archived] = await Promise.all([
             apiGet("/requisitions"),
             apiGet("/requisitions/archive"),
@@ -48,14 +55,60 @@ export default function EmployeeDashboardPage() {
           const a = Array.isArray(active) ? active : [];
           const b = Array.isArray(archived) ? archived : [];
           setRequisitions([...a, ...b]);
-          setTenders([]);
+        } catch (e: any) {
+          const msg = String(e?.message || "");
+          if (!msg.toLowerCase().includes("forbidden")) {
+            setError(msg || "Failed to load requisitions");
+          }
+        }
+
+        // Load all tenders
+        try {
+          if (isSysAdmin) {
+            const allTenders = await apiGet("/tenders/admin/all");
+            const allTendersArray = Array.isArray(allTenders) ? allTenders : [];
+            setTenders(allTendersArray);
+            
+            // For publishing tenders, include all publication pipeline statuses
+            const publishingStatuses = new Set([
+              "TENDER_PREP_COMPLETE",
+              "TENDER_PUBLICATION_PREP",
+              "TENDER_PUBLICATION_APPROVED",
+              "TENDER_PUBLICATION_SIGNING",
+              "READY_TO_PUBLISH",
+              "PUBLISHED",
+              "TENDER_EDITING",
+              "TENDER_PREP_DRAFT",
+              "TENDER_PREP_REVIEW",
+              "TENDER_PREP_APPROVED",
+            ]);
+            const pubTenders = allTendersArray.filter((t) => publishingStatuses.has(String(t.status || "")));
+            setPublishingTenders(pubTenders);
+          } else {
+            const results = await Promise.allSettled([
+              apiGet("/tenders"),
+              apiGet("/tenders/archive/mine"),
+            ]);
+            const tenderBase = results[0].status === 'fulfilled' && Array.isArray(results[0].value) ? results[0].value : [];
+            const tenderArch = results[1].status === 'fulfilled' && Array.isArray(results[1].value) ? results[1].value : [];
+            setTenders([...tenderBase, ...tenderArch]);
+            
+            try {
+              const pub = await apiGet("/tenders/publishing");
+              setPublishingTenders(Array.isArray(pub) ? pub : []);
+            } catch (e: any) {
+              console.error("Error loading publishing tenders:", e);
+            }
+          }
+        } catch (e: any) {
+          console.error("Error loading tenders:", e);
         }
       } catch (e: any) {
         setError(e?.message || "Failed to load dashboard data");
       }
     };
     load();
-  }, [hasTenderRole, isTenderManager]);
+  }, [hasTenderRole, isTenderManager, isSysAdmin]);
 
   const archivedStatuses = new Set([
     "PURCHASE_READY",
@@ -191,6 +244,28 @@ export default function EmployeeDashboardPage() {
     });
   }, [requisitions, selectedOfficerId]);
 
+  // Categorize tenders for admin view
+  const prepStageTenders = useMemo(() => {
+    const prepStatuses = new Set(["DRAFT", "DRAFT_TENDER", "TENDER_PREP_APPROVED", "TENDER_PREP_COMPLETE", "CLOSED", "TENDER_REJECTED"]);
+    return tenders.filter((t) => prepStatuses.has(String(t.status || "")));
+  }, [tenders]);
+
+  const publishingStageTenders = useMemo(() => {
+    const pubStatuses = new Set(["TENDER_PUBLICATION_PREP", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
+    return publishingTenders.filter((t) => pubStatuses.has(String(t.status || "")));
+  }, [publishingTenders]);
+
+  // Group items by status
+  const groupByStatus = (items: any[]) => {
+    const grouped: Record<string, any[]> = {};
+    for (const item of items) {
+      const s = String(item.status || "");
+      if (!grouped[s]) grouped[s] = [];
+      grouped[s].push(item);
+    }
+    return grouped;
+  };
+
   const tenderOfficerStats = useMemo(() => {
     if (!isTenderManager && !isSysAdmin) return [] as any[];
 
@@ -244,35 +319,83 @@ export default function EmployeeDashboardPage() {
     >
       <InternalPage title="Dashboard" pageId="DASALL">
         <div className={selectedOfficerId != null ? "no-print" : ""}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 16,
-              marginBottom: 16,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-              <img
-                src="/I2N_Logo_Blue.jpg"
-                alt="In2Networks Pty Ltd"
-                style={{ width: 80, height: 80, objectFit: "contain", borderRadius: 12 }}
-              />
-              <div>
-                <div style={{ fontSize: 26, fontWeight: 900 }}>In2Networks Pty Ltd</div>
-                <div style={{ color: "var(--muted)", marginTop: 4 }}>Internal e-bidding workspace</div>
-              </div>
-            </div>
-            {user ? (
-              <div style={{ textAlign: "right", fontSize: 13, color: "var(--muted)" }}>
-                <div style={{ fontWeight: 700 }}>{user.name || user.email}</div>
-                <div>{roles.join(", ")}</div>
-              </div>
-            ) : null}
+          <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <img
+              src="/I2NLogoBlue.jpg"
+              alt="In2Networks Pty Ltd"
+              style={{ width: 100, height: 100, objectFit: "contain", marginBottom: 12 }}
+            />
+            <div style={{ fontSize: 28, fontWeight: 900 }}>In2Networks Pty Ltd</div>
+            <div style={{ color: "var(--muted)", marginTop: 4, fontSize: 14 }}>Internal e-bidding workspace</div>
           </div>
 
-          {error && <div style={{ color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
+          {isSysAdmin && (() => {
+            const reqPalette = ["#2563eb", "#0ea5e9", "#06b6d4", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
+            const reqByStatus = groupByStatus(requisitions);
+            const reqSegments = Object.keys(reqByStatus)
+              .sort()
+              .map((status, idx) => ({
+                label: status.replace(/_/g, " "),
+                value: reqByStatus[status].length,
+                color: reqPalette[idx % reqPalette.length],
+              }))
+              .filter(s => s.value > 0);
+
+            const tenderPalette = ["#22c55e", "#16a34a", "#4ade80", "#84cc16", "#fbbf24", "#fb923c", "#f87171"];
+            const tenderByStatus = groupByStatus(tenders);
+            const tenderSegments = Object.keys(tenderByStatus)
+              .sort()
+              .map((status, idx) => ({
+                label: status.replace(/_/g, " "),
+                value: tenderByStatus[status].length,
+                color: tenderPalette[idx % tenderPalette.length],
+              }))
+              .filter(s => s.value > 0);
+
+            const pubPalette = ["#f59e0b", "#fbbf24", "#fcd34d", "#fda34b", "#f97316", "#fb923c", "#ff6b6b"];
+            const pubByStatus = groupByStatus(publishingTenders);
+            const pubSegments = Object.keys(pubByStatus)
+              .sort()
+              .map((status, idx) => ({
+                label: status.replace(/_/g, " "),
+                value: pubByStatus[status].length,
+                color: pubPalette[idx % pubPalette.length],
+              }))
+              .filter(s => s.value > 0);
+
+            return (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
+                <div style={{ padding: 12, background: "#f3f4f6", borderRadius: 8 }}>
+                  <PieChart
+                    title="Requisitions"
+                    segments={reqSegments.length > 0 ? reqSegments : [{ label: "No data", value: 1, color: "#d1d5db" }]}
+                  />
+                </div>
+                <div style={{ padding: 12, background: "#f3f4f6", borderRadius: 8 }}>
+                  <PieChart
+                    title="Tender Preparation"
+                    segments={tenderSegments.length > 0 ? tenderSegments : [{ label: "No data", value: 1, color: "#d1d5db" }]}
+                  />
+                </div>
+                <div style={{ padding: 12, background: "#f3f4f6", borderRadius: 8 }}>
+                  <PieChart
+                    title="Tender Publishing"
+                    segments={pubSegments.length > 0 ? pubSegments : [{ label: "No data", value: 1, color: "#d1d5db" }]}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+            <input
+              className="input"
+              placeholder="Search by ID, title, department, status…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              style={{ width: 260 }}
+            />
+          </div>
 
           {requesterOnly ? (
             <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
@@ -292,130 +415,6 @@ export default function EmployeeDashboardPage() {
               </div>
             </div>
           ) : null}
-
-          {isTenderManager ? (
-            <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
-              <h3 style={{ marginTop: 0 }}>My team's tenders by status</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "240px auto", gap: 12 }}>
-                {/* Overall team tender status */}
-                <PieChart title="All team tenders by status" segments={statusSegments} />
-                {/* Per-officer tender status pies */}
-                <div>
-                  {tenderOfficerStats.length === 0 ? (
-                    <p style={{ color: "var(--muted)", marginTop: 0 }}>
-                      No tender officer assignments found yet.
-                    </p>
-                  ) : (
-                    <div
-                      style={{
-                        display: "grid",
-                        gap: 8,
-                        gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-                      }}
-                    >
-                      {tenderOfficerStats.map((o) => {
-                        const officerPalette = [
-                          "#2563eb",
-                          "#eab308",
-                          "#22c55e",
-                          "#ef4444",
-                          "#0ea5e9",
-                          "#a855f7",
-                        ];
-
-                        const segments = Object.keys(o.byStatus)
-                          .filter((k) => (o.byStatus as any)[k] > 0)
-                          .sort()
-                          .map((k, idx) => ({
-                            label: k.replace(/_/g, " "),
-                            value: (o.byStatus as any)[k] || 0,
-                            // Use a distinct color per segment index so stacked bar is clearly separated
-                            color:
-                              officerPalette[idx % officerPalette.length] ||
-                              "#2563eb",
-                          }));
-
-                        // Single card coming from PieChart itself; use officer name as the title
-                        return (
-                          <PieChart
-                            key={o.officerId}
-                            title={o.officerName}
-                            segments={segments}
-                          />
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {isOfficer ? (
-            <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
-              <h3 style={{ marginTop: 0 }}>Officer workload</h3>
-              <div style={{ display: "grid", gridTemplateColumns: "240px auto", gap: 12 }}>
-                <PieChart title="By status (officer)" segments={statusSegments} />
-                <div>
-                  <p style={{ color: "var(--muted)", marginTop: 0 }}>
-                    Requisitions where you are part of the working team (officer roles).
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {isManager || isSysAdmin ? (
-            <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
-              <h3 style={{ marginTop: 0 }}>My team's work (requisitions by officer)</h3>
-              {officerStats.length === 0 ? (
-                <p style={{ color: "var(--muted)", marginTop: 0 }}>
-                  No officer assignments found yet.
-                </p>
-              ) : (
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 12,
-                    gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                  }}
-                >
-                  {officerStats.map((o) => {
-                    const segments = Object.keys(o.byStatus)
-                      .filter((k) => (o.byStatus as any)[k] > 0)
-                      .sort()
-                      .map((k) => ({
-                        label: k.replace(/_/g, " "),
-                        value: (o.byStatus as any)[k] || 0,
-                        color:
-                          k === "APROVAL_PENDING" || k === "CHANGES_SUBMITTED"
-                            ? "#eab308"
-                            : "#2563eb",
-                      }));
-
-                    const handleClick = () => {
-                      setSelectedOfficerId(o.officerId);
-                      setSelectedOfficerName(o.officerName);
-                    };
-
-                    return (
-                      <button
-                        key={o.officerId}
-                        type="button"
-                        onClick={handleClick}
-                        className="card"
-                        style={{ boxShadow: "none", padding: 10, textAlign: "left", cursor: "pointer" }}
-                      >
-                        <div style={{ fontWeight: 900, marginBottom: 4, fontSize: 14 }}>{o.officerName}</div>
-                        <PieChart title="By status" segments={segments} />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : null}
-
 
           {selectedOfficerId != null ? (
             <div
@@ -495,10 +494,178 @@ export default function EmployeeDashboardPage() {
             </div>
           ) : null}
 
-          <div className="card" style={{ boxShadow: "none" }}>
-            <h3 style={{ marginTop: 0 }}>
-              {isTenderManager || hasTenderRole ? "Recent tenders" : "Recent requisitions"}
-            </h3>
+          {isSysAdmin ? (
+            <div>
+              {/* Collapsible Category Component */}
+              {["Requisitions", "Tender Preparation", "Tender Publishing"].map((category) => {
+                const isExpanded = expandedCategories[category] ?? true;
+                let items: any[] = [];
+                let term = q.trim().toLowerCase();
+
+                if (category === "Requisitions") {
+                  items = requisitions.filter((r) => {
+                    if (!term) return true;
+                    const id = String(r.id || "").toLowerCase();
+                    const title = String(r.title || r.description || "").toLowerCase();
+                    const dept = String((r as any).department?.name || "").toLowerCase();
+                    const status = String(r.status || "").toLowerCase();
+                    return id.includes(term) || title.includes(term) || dept.includes(term) || status.includes(term);
+                  });
+                } else if (category === "Tender Preparation") {
+                  items = prepStageTenders.filter((t) => {
+                    if (!term) return true;
+                    const id = String(t.id || "").toLowerCase();
+                    const tenderNo = String((t as any).tenderNumber || "").toLowerCase();
+                    const title = String(t.requisition?.title || t.title || "").toLowerCase();
+                    const dept = String(t.requisition?.department?.name || "").toLowerCase();
+                    const status = String(t.status || "").toLowerCase();
+                    return id.includes(term) || tenderNo.includes(term) || title.includes(term) || dept.includes(term) || status.includes(term);
+                  });
+                } else if (category === "Tender Publishing") {
+                  items = publishingTenders.filter((t) => {
+                    if (!term) return true;
+                    const id = String(t.id || "").toLowerCase();
+                    const tenderNo = String((t as any).tenderNumber || "").toLowerCase();
+                    const title = String(t.requisition?.title || t.title || "").toLowerCase();
+                    const dept = String(t.requisition?.department?.name || "").toLowerCase();
+                    const status = String(t.status || "").toLowerCase();
+                    return id.includes(term) || tenderNo.includes(term) || title.includes(term) || dept.includes(term) || status.includes(term);
+                  });
+                }
+
+                const byStatus = groupByStatus(items);
+                const statuses = Object.keys(byStatus).sort();
+
+                // Calculate latest activity date for sorting within each status
+                const itemsWithLatestDate = statuses.map((status) => ({
+                  status,
+                  items: byStatus[status],
+                  latestDate: byStatus[status].reduce((max: any, item: any) => {
+                    const itemDate = new Date(item.updatedAt || item.createdAt || 0);
+                    const maxDate = new Date(max || 0);
+                    return itemDate > maxDate ? item.updatedAt || item.createdAt : max;
+                  }, null),
+                }));
+
+                // Sort statuses by latest activity date (most recent first)
+                itemsWithLatestDate.sort((a, b) => {
+                  const dateA = new Date(a.latestDate || 0).getTime();
+                  const dateB = new Date(b.latestDate || 0).getTime();
+                  return dateB - dateA;
+                });
+
+                // Reconstruct byStatus with sorted statuses
+                const sortedByStatus = itemsWithLatestDate.reduce((acc: any, item: any) => {
+                  acc[item.status] = item.items;
+                  return acc;
+                }, {});
+
+                const statusesSorted = Object.keys(sortedByStatus).sort();
+
+                return (
+                  <div key={category} style={{ marginBottom: 16 }}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedCategories((prev) => ({
+                          ...prev,
+                          [category]: !prev[category],
+                        }))
+                      }
+                      style={{
+                        width: "100%",
+                        padding: "12px 16px",
+                        background: "#f3f4f6",
+                        border: "1px solid #d1d5db",
+                        borderRadius: 4,
+                        fontSize: 16,
+                        fontWeight: 600,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 18 }}>{isExpanded ? "−" : "+"}</span>
+                      <span>
+                        {category} ({items.length})
+                      </span>
+                    </button>
+
+                    {isExpanded && (
+                      <div style={{ marginTop: 8 }}>
+                        {statusesSorted.length === 0 ? (
+                          <p style={{ color: "var(--muted)", marginLeft: 16 }}>No items found.</p>
+                        ) : (
+                          statusesSorted.map((status) => {
+                            const statusItems = sortedByStatus[status];
+                            return (
+                              <div key={status} style={{ marginBottom: 12, marginLeft: 8 }}>
+                                <div
+                                  style={{
+                                    padding: "8px 12px",
+                                    background: "#e5e7eb",
+                                    borderRadius: 3,
+                                    fontSize: 14,
+                                    fontWeight: 500,
+                                  }}
+                                >
+                                  {status.replace(/_/g, " ")} ({statusItems.length})
+                                </div>
+                                <table
+                                  width="100%"
+                                  cellPadding={6}
+                                  style={{ borderCollapse: "collapse", fontSize: 13, marginTop: 4 }}
+                                >
+                                  <thead>
+                                    <tr style={{ textAlign: "left", background: "#f9fafb" }}>
+                                      <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>{category === "Requisitions" ? "ID" : "Tender #"}</th>
+                                      <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
+                                      <th style={{ width: 160, borderBottom: "1px solid #d1d5db" }}>Department</th>
+                                      <th style={{ width: 120, borderBottom: "1px solid #d1d5db" }}>Latest Activity</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {statusItems.map((item) => (
+                                      <tr
+                                        key={item.id}
+                                        style={{ borderBottom: "1px solid #e5e7eb", background: "#fafafa" }}
+                                      >
+                                        {category !== "Requisitions" ? (
+                                          <td>
+                                            {(item as any).tenderNumber != null
+                                              ? `TEN-${String((item as any).tenderNumber).padStart(5, "0")}`
+                                              : item.id}
+                                          </td>
+                                        ) : (
+                                          <td>{item.id}</td>
+                                        )}
+                                        <td>{item.title || item.requisition?.title || item.description || ""}</td>
+                                        <td>{item.requisition?.department?.name || (item as any).department?.name || ""}</td>
+                                        <td style={{ fontVariantNumeric: "tabular-nums" }}>
+                                          {item.updatedAt ? new Date(item.updatedAt).toISOString().slice(0, 10) : item.createdAt ? new Date(item.createdAt).toISOString().slice(0, 10) : ""}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {!isSysAdmin && (
+            <div className="card" style={{ boxShadow: "none" }}>
+              <h3 style={{ marginTop: 0 }}>
+                {isTenderManager || hasTenderRole ? "Recent tenders" : "Recent requisitions"}
+              </h3>
             <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ textAlign: "left" }}>
@@ -535,7 +702,8 @@ export default function EmployeeDashboardPage() {
                 ) : null}
               </tbody>
             </table>
-          </div>
+            </div>
+          )}
         </div>
       </InternalPage>
     </RequireRoles>

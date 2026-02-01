@@ -59,6 +59,9 @@ export function getCurrentUser() {
     "SYS_ADMIN",
     // Newly introduced internal roles
     "TENDER_APPROVAL",
+    "TENDER_PUBLICATION_PREPARER",
+    "TENDER_PUBLICATION_MANAGER",
+    "GM",
   ];
 
   return {
