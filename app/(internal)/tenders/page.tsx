@@ -46,7 +46,7 @@ export default function TendersPage() {
         const allTendersArray = Array.isArray(allTenders) ? allTenders : [];
         
         // Filter for Tender Preparation stage statuses
-        const prepStatuses = new Set(["DRAFT", "DRAFT_TENDER", "TENDER_PREP_APPROVED", "TENDER_PREP_COMPLETE", "CLOSED", "TENDER_REJECTED"]);
+        const prepStatuses = new Set(["TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_REJECTED", "TENDER_PREP_APPROVED", "CLOSED"]);
         const filtered = allTendersArray.filter((t) => prepStatuses.has(String(t.status || "")));
         setTenders(filtered);
       } catch (e: any) {

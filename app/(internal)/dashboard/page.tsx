@@ -77,10 +77,6 @@ export default function EmployeeDashboardPage() {
               "TENDER_PUBLICATION_SIGNING",
               "READY_TO_PUBLISH",
               "PUBLISHED",
-              "TENDER_EDITING",
-              "TENDER_PREP_DRAFT",
-              "TENDER_PREP_REVIEW",
-              "TENDER_PREP_APPROVED",
             ]);
             const pubTenders = allTendersArray.filter((t) => publishingStatuses.has(String(t.status || "")));
             setPublishingTenders(pubTenders);
@@ -246,12 +242,12 @@ export default function EmployeeDashboardPage() {
 
   // Categorize tenders for admin view
   const prepStageTenders = useMemo(() => {
-    const prepStatuses = new Set(["DRAFT", "DRAFT_TENDER", "TENDER_PREP_APPROVED", "TENDER_PREP_COMPLETE", "CLOSED", "TENDER_REJECTED"]);
+    const prepStatuses = new Set(["TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_REJECTED", "TENDER_PREP_APPROVED", "CLOSED"]);
     return tenders.filter((t) => prepStatuses.has(String(t.status || "")));
   }, [tenders]);
 
   const publishingStageTenders = useMemo(() => {
-    const pubStatuses = new Set(["TENDER_PUBLICATION_PREP", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
+    const pubStatuses = new Set(["TENDER_PREP_COMPLETE", "TENDER_PUBLICATION_PREP", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
     return publishingTenders.filter((t) => pubStatuses.has(String(t.status || "")));
   }, [publishingTenders]);
 
@@ -342,7 +338,7 @@ export default function EmployeeDashboardPage() {
               .filter(s => s.value > 0);
 
             const tenderPalette = ["#22c55e", "#16a34a", "#4ade80", "#84cc16", "#fbbf24", "#fb923c", "#f87171"];
-            const tenderByStatus = groupByStatus(tenders);
+            const tenderByStatus = groupByStatus(prepStageTenders);
             const tenderSegments = Object.keys(tenderByStatus)
               .sort()
               .map((status, idx) => ({
@@ -353,7 +349,7 @@ export default function EmployeeDashboardPage() {
               .filter(s => s.value > 0);
 
             const pubPalette = ["#f59e0b", "#fbbf24", "#fcd34d", "#fda34b", "#f97316", "#fb923c", "#ff6b6b"];
-            const pubByStatus = groupByStatus(publishingTenders);
+            const pubByStatus = groupByStatus(publishingStageTenders);
             const pubSegments = Object.keys(pubByStatus)
               .sort()
               .map((status, idx) => ({
