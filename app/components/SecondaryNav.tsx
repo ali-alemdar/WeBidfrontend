@@ -43,6 +43,20 @@ export default function SecondaryNav() {
 
   const sections: Section[] = [
     {
+      key: "dashboard",
+      title: "Dashboard",
+      match: (p) => p === "/dashboard",
+      items: ({ isSysAdmin }) => {
+        if (!isSysAdmin) return [];
+        return [
+          { href: "/dashboard", label: "Overview" },
+          { href: "/requisitions", label: "Requisitions" },
+          { href: "/tenders", label: "Tenders" },
+          { href: "/admin", label: "Admin" },
+        ];
+      },
+    },
+    {
       key: "requisitions",
       title: "Requisitions",
       match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions"),
@@ -148,10 +162,9 @@ export default function SecondaryNav() {
     },
   ];
 
-  // Do not show secondary nav on dashboard and main list pages (only for SYS_ADMIN who sees the new admin view)
+  // Do not show secondary nav on main list pages for SYS_ADMIN (they see the admin view directly)
   const isMainListPage = 
-    pathname === "/dashboard" || 
-    ((pathname === "/requisitions" || pathname === "/tenders" || pathname === "/submissions") && isSysAdmin);
+    (pathname === "/requisitions" || pathname === "/tenders" || pathname === "/submissions") && isSysAdmin;
   if (isMainListPage) return null;
 
   let section = sections.find((s) => s.match(pathname));
