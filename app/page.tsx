@@ -48,11 +48,14 @@ export default function HomePage() {
         roles.includes("TENDER_PUBLICATION_PREPARER") ||
         roles.includes("TENDER_PUBLICATION_MANAGER");
       const isTenderManager = roles.includes("TENDER_APPROVAL") || hasTenderPublicationRole || isSysAdmin;
+      const isGeneralManager = roles.includes("GENERAL_MANAGER");
       const isRequesterOnly =
-        roles.includes("REQUESTER") && !isOfficer && !isReqManager && !isTenderManager;
+        roles.includes("REQUESTER") && !isOfficer && !isReqManager && !isTenderManager && !isGeneralManager;
 
       if (isRequesterOnly) {
         router.push("/requisitions/status");
+      } else if (isGeneralManager) {
+        router.push("/gm-dashboard");
       } else {
         router.push("/dashboard");
       }

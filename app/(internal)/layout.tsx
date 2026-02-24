@@ -82,7 +82,7 @@ export default function InternalLayout({
           <div style={{ marginRight: "1.25rem" }}>
             <Sidebar />
           </div>
-          {(!isGeneralManager || isSysAdmin) && (
+          {!(isGeneralManager && !isSysAdmin) && (
             <div>
               <SecondaryNav />
             </div>
