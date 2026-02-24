@@ -33,20 +33,23 @@ export default function AdminTenderPublishingAssignmentsPage() {
       ]);
       const all = Array.isArray(tendersResp) ? tendersResp : [];
 
-      // Unassigned: TENDER_PREP_COMPLETE status with no publication setup
+      // Unassigned: TENDER_PUBLICATION_PREP or TENDER_PREP_APPROVED status with no publication setup
       const unassigned = all.filter(
-        (row) =>
-          String(row.status || "") === "TENDER_PREP_COMPLETE" &&
-          (!Array.isArray((row as any).publicationSetups) ||
-            (row as any).publicationSetups.length === 0)
+        (row) => {
+          const status = String(row.status || "");
+          const hasSetup = Array.isArray((row as any).publicationSetups) &&
+            (row as any).publicationSetups.length > 0;
+          return ["TENDER_PUBLICATION_PREP", "TENDER_PREP_APPROVED"].includes(status) && !hasSetup;
+        }
       );
       
-      // Assigned: Any publication status or has publication setup
+      // Assigned: Must have publication setup (any status with active assignment)
       const assigned = all.filter(
-        (row) =>
-          String(row.status || "") !== "TENDER_PREP_COMPLETE" ||
-          (Array.isArray((row as any).publicationSetups) &&
-            (row as any).publicationSetups.length > 0)
+        (row) => {
+          const hasSetup = Array.isArray((row as any).publicationSetups) &&
+            (row as any).publicationSetups.length > 0;
+          return hasSetup;
+        }
       );
 
       setTenders(unassigned);
@@ -106,23 +109,29 @@ export default function AdminTenderPublishingAssignmentsPage() {
         const mgrId = managerSig && Number.isFinite(managerSig.userId) ? managerSig.userId : null;
         setPublishManagerId(mgrId);
       } else {
-        // Fallback to old endpoints for unassigned tenders
-        const [preparers, pubMgr] = await Promise.all([
-          apiGet(`/tenders/${id}/publication-team`).catch(() => null),
-          apiGet(`/tenders/${id}/publication-manager`).catch(() => null),
-        ]);
+        // Fallback to old endpoints for unassigned tenders (TENDER_PREP_COMPLETE)
+        try {
+          const [preparers, pubMgr] = await Promise.all([
+            apiGet(`/tenders/${id}/publication-team`).catch(() => null),
+            apiGet(`/tenders/${id}/publication-manager`).catch(() => null),
+          ]);
 
-        const assignments = Array.isArray(preparers?.preparers)
-          ? preparers.preparers
-          : [];
-        const pIds = assignments
-          .map((a: any) => Number(a.userId))
-          .filter((n: any) => Number.isFinite(n));
-        setPreparerIds(pIds);
+          const assignments = Array.isArray(preparers?.preparers)
+            ? preparers.preparers
+            : [];
+          const pIds = assignments
+            .map((a: any) => Number(a.userId))
+            .filter((n: any) => Number.isFinite(n));
+          setPreparerIds(pIds);
 
-        const mgrId =
-          pubMgr && typeof pubMgr.id === "number" ? pubMgr.id : null;
-        setPublishManagerId(mgrId);
+          const mgrId =
+            pubMgr && typeof pubMgr.id === "number" ? pubMgr.id : null;
+          setPublishManagerId(mgrId);
+        } catch {
+          // For tenders without prior assignments, start fresh
+          setPreparerIds([]);
+          setPublishManagerId(null);
+        }
       }
     } catch {
       setPreparerIds([]);
@@ -241,7 +250,7 @@ export default function AdminTenderPublishingAssignmentsPage() {
 
           <div className="card" style={{ boxShadow: "none" }}>
             <h3 style={{ marginTop: 0 }}>
-              Publication assignments for draft tender:{" "}
+              Publication assignments for:{" "}
               <span style={{ fontWeight: 500 }}>{selectedTitle}</span>
             </h3>
 
@@ -545,7 +554,7 @@ export default function AdminTenderPublishingAssignmentsPage() {
                         style={{ borderBottom: "1px solid #e5e7eb" }}
                       >
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>
-                          TEN-{String(tender.tenderNumber || 0).padStart(5, "0")}
+                          TEN-{String(tender.tender_id || 0).padStart(5, "0")}
                         </td>
                         <td>{tender.requisition?.title || tender.title || "(Untitled)"}</td>
                         <td>{preparers || "-"}</td>

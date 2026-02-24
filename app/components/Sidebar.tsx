@@ -18,74 +18,92 @@ export default function Sidebar() {
   const roles = ((user as any)?.roles || []) as string[];
   const isSysAdmin = roles.includes("SYS_ADMIN");
 
+  const isRequisitionOfficer =
+    roles.includes("REQUISITION_OFFICER") || isSysAdmin;
+  const isRequisitionManager =
+    roles.includes("REQUISITION_MANAGER") || isSysAdmin;
+  const isRequesterOnly =
+    roles.includes("REQUESTER") && !isRequisitionOfficer && !isRequisitionManager;
+
   const canSeeRequisitions =
-    roles.includes("REQUISITION_OFFICER") ||
-    roles.includes("REQUISITION_MANAGER") ||
+    isRequisitionOfficer ||
+    isRequisitionManager ||
     isSysAdmin;
 
-  const canSeeDashboard = roles.length > 0;
+  const canSeeDashboard = roles.length > 0 && !isRequesterOnly;
 
   const isTenderOfficerRole =
     roles.includes("TENDERING_OFFICER") || roles.includes("TENDER_COMMITTEE");
   const isTenderManagerRole = roles.includes("TENDER_APPROVAL");
   const isTenderPublicationPreparer = roles.includes("TENDER_PUBLICATION_PREPARER");
   const isTenderPublicationManager = roles.includes("TENDER_PUBLICATION_MANAGER");
+  const isGeneralManager = roles.includes("GENERAL_MANAGER");
 
-  const isAdminOnly = isSysAdmin && !canSeeRequisitions && !isTenderOfficerRole && !isTenderManagerRole && !isTenderPublicationPreparer && !isTenderPublicationManager;
+  const isAdminOnly = isSysAdmin && !canSeeRequisitions && !isTenderOfficerRole && !isTenderManagerRole && !isTenderPublicationPreparer && !isTenderPublicationManager && !isGeneralManager;
 
   const canSeeTenders = (isTenderOfficerRole || isTenderManagerRole || isSysAdmin) && !isAdminOnly;
   const canSeeTenderPublishing =
     (isTenderPublicationPreparer ||
     isTenderPublicationManager ||
-    isTenderOfficerRole ||
-    isTenderManagerRole ||
     isSysAdmin) && !isAdminOnly;
+  const canSeeGMApprovals = (isGeneralManager || isSysAdmin) && !isAdminOnly;
 
   const canSeeAudit = roles.includes("AUDITOR") || isSysAdmin;
 
-  const items: NavItem[] = [
-    ...(canSeeDashboard ? [{ href: "/dashboard", label: "Dashboard" }] : []),
-    ...(canSeeRequisitions
-      ? [
-          {
-            href: "/requisitions",
-            label: "Requisitions",
-            // Sub-nav pages that belong to Requisitions
-            match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions"),
-          },
-        ]
-      : []),
-    ...(canSeeTenders
-      ? [
-          {
-            // Tender managers should land on their approval queue rather than the
-            // officer working list. Officers and sys admin keep the main list.
-            href:
-              isTenderOfficerRole || isSysAdmin
-                ? "/tenders"
-                : "/tenders/waiting-approvals",
-            label: "Tender Preparation",
-            // Treat bid opening / evaluation / awards as part of the Tenders main section
-            match: (p) =>
-              p.startsWith("/tenders") ||
-              p.startsWith("/bid-opening") ||
-              p.startsWith("/evaluation") ||
-              p.startsWith("/awards"),
-          },
-        ]
-      : []),
-    ...(canSeeTenderPublishing
-      ? [
-          {
-            href: "/tender-publishing",
-            label: "Tender Publishing",
-            match: (p) => p.startsWith("/tender-publishing"),
-          },
-        ]
-      : []),
-    ...(canSeeAudit ? [{ href: "/audit", label: "Audit" }] : []),
-    ...(isSysAdmin ? [{ href: "/admin", label: "Admin" }] : []),
-  ];
+  // For GM-only users (not also SYS_ADMIN), show simplified navbar
+  const isGMOnlyView = canSeeGMApprovals && !isSysAdmin;
+  
+  const items: NavItem[] = isGMOnlyView
+    ? [
+        { href: "/dashboard", label: "Dashboard", match: (p) => p === "/dashboard" || p === "/gm-dashboard" },
+        { href: "/requisitions/status", label: "My Requisitions", match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions") },
+        { href: "/gm-approvals", label: "Tenders to Approve", match: (p) => p.startsWith("/gm-approvals") || p.startsWith("/tenders") && p.includes("/gm-approval") },
+      ]
+    : [
+        ...(isRequesterOnly
+          ? [
+              {
+                href: "/requisitions/status",
+                label: "My Requisitions",
+                match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions"),
+              },
+            ]
+          : []),
+        ...(canSeeDashboard ? [{ href: "/dashboard", label: "Dashboard" }] : []),
+        ...(canSeeRequisitions
+          ? [
+              {
+                href: "/requisitions",
+                label: "Requisitions",
+                match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions"),
+              },
+            ]
+          : []),
+        ...(canSeeTenders
+          ? [
+              {
+                href: "/tenders",
+                label: "Tender Preparation",
+                match: (p) =>
+                  p.startsWith("/tenders") ||
+                  p.startsWith("/bid-opening") ||
+                  p.startsWith("/evaluation") ||
+                  p.startsWith("/awards"),
+              },
+            ]
+          : []),
+        ...(canSeeTenderPublishing
+          ? [
+              {
+                href: "/tender-publishing",
+                label: "Tender Publishing",
+                match: (p) => p.startsWith("/tender-publishing"),
+              },
+            ]
+          : []),
+        ...(canSeeAudit ? [{ href: "/audit", label: "Audit" }] : []),
+        ...(isSysAdmin ? [{ href: "/admin", label: "Admin" }] : []),
+      ];
 
   return (
     <aside

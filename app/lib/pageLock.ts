@@ -71,16 +71,22 @@ export function usePageLock<TData = any>(config: PageLockConfig<TData>): UsePage
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editUrl]);
 
-  // Heartbeat + best-effort release
+  // Heartbeat + best-effort release + auto-refresh when locked
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
 
     let intervalId: any = null;
 
     if (lockStatus === "OWNED") {
+      // Heartbeat every 60 seconds for lock owner
       intervalId = window.setInterval(() => {
         apiPost(heartbeatUrl, {}).catch(() => undefined);
       }, 60_000);
+} else if (lockStatus === "LOCKED") {
+      // Auto-refresh every 5 seconds for locked users to see updates faster
+      intervalId = window.setInterval(() => {
+        reload().catch(() => undefined);
+      }, 5_000); // Changed from 10 seconds to 5 seconds
     }
 
     const handleBeforeUnload = () => {
@@ -91,10 +97,20 @@ export function usePageLock<TData = any>(config: PageLockConfig<TData>): UsePage
       }
     };
 
+    const handleVisibilityChange = () => {
+  if (document.hidden && lockStatus === "OWNED") {
+    apiPost(releaseUrl, {})
+      .then(() => reload()) // Reload to update state
+      .catch(() => undefined);
+  }
+};
+
     window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (intervalId) window.clearInterval(intervalId);
       // Also attempt a best-effort release when the hook unmounts or
       // dependencies change. This is idempotent on the backend.

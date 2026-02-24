@@ -1,12 +1,15 @@
+// file //home/ali/e-bidding/frontend/app/(internal)/submissions/page.tsx
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import InternalPage from "../../../components/InternalPage";
 import BackButton from "../../../components/BackButton";
 import RequireRoles from "../../../components/RequireRoles";
 import { apiGet, apiPost } from "../../../lib/api";
 import { getCurrentUser } from "../../../lib/authClient";
+import { usePageLock } from "../../../lib/pageLock";
 
 interface Props {
   params: { id: string };
@@ -32,28 +35,100 @@ function money(n: number) {
 }
 
 export default function SubmissionRequisitionPage({ params }: Props) {
+  const router = useRouter();
   const user = getCurrentUser();
   const roles = (user?.roles || []) as any[];
-
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>("");
-  const [message, setMessage] = useState<string>("");
+  const userId = user ? Number(user.id) : NaN;
 
   const isOfficer = roles.includes("REQUISITION_OFFICER") || roles.includes("SYS_ADMIN");
   const canManagerAct = roles.includes("REQUISITION_MANAGER") || roles.includes("SYS_ADMIN");
+  const shouldLock = isOfficer || canManagerAct;
+
+  const [error, setError] = useState<string>("");
+  const [message, setMessage] = useState<string>("");
+  const [managerNote, setManagerNote] = useState<string>("");
+  const [managerNotes, setManagerNotes] = useState<any[]>([]);
+  const idleTimeoutRef = useRef<any>(null);
+  const lastActivityRef = useRef(Date.now());
+
+useEffect(() => {
+  if (user) {
+    const roles = (user?.roles || []) as string[];
+    const isManager = roles.includes("REQUISITION_MANAGER") || roles.includes("SYS_ADMIN");
+    
+    // Check if coming from approval package button
+    const urlParams = new URLSearchParams(window.location.search);
+    const fromApproval = urlParams.get('fromApproval') === 'true';
+    
+    // Only redirect if manager AND NOT coming from approval package
+    if (isManager && !fromApproval) {
+      router.replace(`/requisitions/${params.id}/view`);
+    }
+  }
+}, [user, params.id, router]);
+  
+  // Use page lock for officers/managers
+  const {
+    data,
+    loading,
+    lockStatus,
+    lockInfo,
+    reload,
+  } = usePageLock({
+    resourceType: "REQUISITION",
+    resourceId: Number(params.id),
+    scope: "SUBMISSIONS_PAGE",
+    editUrl: `/requisitions/${params.id}`,
+    heartbeatUrl: `/requisitions/${params.id}/edit-heartbeat`,
+    releaseUrl: `/requisitions/${params.id}/edit-release`,
+    mapEditResponse: (res: any) => ({
+      data: res,
+      lockStatus: shouldLock ? "NONE" : "NONE",
+      lockInfo: null,
+    }),
+  });
+
+  // Track idle time (5 minutes = 300 seconds)
+  const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+  useEffect(() => {
+    if (!shouldLock || lockStatus !== "OWNED") return;
+
+    const handleActivity = () => {
+      lastActivityRef.current = Date.now();
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+      idleTimeoutRef.current = setTimeout(() => {
+        // Idle timeout reached, release lock
+        apiPost(`/requisitions/${params.id}/edit-release`, {}).catch(() => undefined);
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    // Listen for user activity
+    const events = ["mousedown", "keydown", "scroll", "touchstart"];
+    for (const event of events) {
+      window.addEventListener(event, handleActivity);
+    }
+
+    handleActivity(); // Initialize timeout
+
+    return () => {
+      for (const event of events) {
+        window.removeEventListener(event, handleActivity);
+      }
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    };
+  }, [shouldLock, lockStatus, params.id]);
 
   const load = async () => {
     setError("");
     setMessage("");
-    setLoading(true);
+    await reload();
+    // Fetch manager notes
     try {
-      const r = await apiGet(`/requisitions/${params.id}`);
-      setData(r);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load requisition");
-    } finally {
-      setLoading(false);
+      const notes = await apiGet(`/requisitions/${params.id}/manager-notes`);
+      setManagerNotes(Array.isArray(notes) ? notes : []);
+    } catch {
+      // Ignore
     }
   };
 
@@ -251,6 +326,24 @@ export default function SubmissionRequisitionPage({ params }: Props) {
     );
   }
 
+  // Get locked-by user info
+  const lockedByUserId = lockInfo?.lockedByUserId ? Number(lockInfo.lockedByUserId) : null;
+  const isLockedByMe = lockedByUserId === userId;
+  const isLockedByOther = lockStatus === "LOCKED" && !isLockedByMe;
+
+  // Determine lock warning message
+  let lockWarning = "";
+  if (isLockedByOther && data?.officerAssignments) {
+    const lockedByOfficer = data.officerAssignments.find(
+      (a: any) => Number(a?.userId) === lockedByUserId
+    );
+    const lockedByName = lockedByOfficer?.user?.fullName || `User ${lockedByUserId}`;
+    lockWarning = `This requisition is currently being edited by ${lockedByName}. You cannot make changes.`;
+  }
+
+  // Allow editing if: user can edit based on role AND (no one else is editing OR they own the lock)
+  const canEdit = !isLockedByOther;
+
   return (
     <RequireRoles anyOf={["REQUISITION_OFFICER", "REQUISITION_MANAGER", "SYS_ADMIN"]} title={title}>
       <InternalPage title={title}>
@@ -258,20 +351,55 @@ export default function SubmissionRequisitionPage({ params }: Props) {
           <BackButton fallbackHref="/submissions" />
         </div>
 
+        {lockWarning && (
+          <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+            <strong>⚠️ Edit locked:</strong> {lockWarning}
+          </div>
+        )}
+
         {error && <div style={{ color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
         {message && <div style={{ color: "#15803d", marginBottom: 12 }}>{message}</div>}
 
-
-        {canManagerAct && isApprovalPending ? (
+        {/* Manager notes display */}
+        {managerNotes.length > 0 && (
+          <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+            <strong style={{ display: "block", marginBottom: 8 }}>📝 Manager notes</strong>
+            {[...managerNotes].reverse().map((note: any) => (
+              <div key={note.id} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid rgba(0,0,0,0.1)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600 }}>{note.authorName}</span>
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>
+                    {note.createdAt ? new Date(note.createdAt).toLocaleString() : ""}
+                  </span>
+                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{note.body}</div>
+              </div>
+            ))}
+          </div>
+        )}
+		{/*
+        {canManagerAct && isApprovalPending && canEdit ? (
           <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
             <h3 style={{ marginTop: 0 }}>Manager actions</h3>
             <p style={{ marginTop: 0, color: "var(--muted)" }}>
               Decide on the approval package for this requisition.
             </p>
+            <div style={{ marginBottom: 12 }}>
+              <label>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Note to officers (optional)</div>
+                <textarea
+                  className="input"
+                  style={{ width: "100%", minHeight: 60 }}
+                  value={managerNote}
+                  onChange={(e) => setManagerNote(e.target.value)}
+                  placeholder="Write a note for the officers..."
+                />
+              </label>
+            </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button
                 className="btn btn-primary"
-                disabled={loading}
+                disabled={loading || !canEdit}
                 onClick={async () => {
                   setError("");
                   setMessage("");
@@ -287,13 +415,17 @@ export default function SubmissionRequisitionPage({ params }: Props) {
               </button>
               <button
                 className="btn"
-                disabled={loading}
+                disabled={loading || !canEdit}
                 onClick={async () => {
                   setError("");
                   setMessage("");
                   try {
-                    await apiPost(`/requisitions/${data.id}/tender-prep/manager-reject`, { reason: null });
-                    await load();
+                    // Add manager note if provided
+                    if (managerNote.trim()) {
+                      await apiPost(`/requisitions/${data.id}/manager-notes`, { body: managerNote.trim() });
+                    }
+                    await apiPost(`/requisitions/${data.id}/tender-prep/manager-reject`, { reason: managerNote.trim() || null });
+                    router.push("/requisitions/waiting-approvals");
                   } catch (e: any) {
                     setError(e?.message || "Failed to return to officers");
                   }
@@ -304,12 +436,12 @@ export default function SubmissionRequisitionPage({ params }: Props) {
               <button
                 className="btn"
                 style={{ color: "#b91c1c" }}
-                disabled={loading}
+                disabled={loading || !canEdit}
                 onClick={async () => {
                   setError("");
                   setMessage("");
                   try {
-                    await apiPost(`/requisitions/${data.id}/tender-prep/manager-archive`, { reason: null });
+                    await apiPost(`/requisitions/${data.id}/tender-prep/manager-archive`, { reason: managerNote.trim() || null });
                     await load();
                   } catch (e: any) {
                     setError(e?.message || "Failed to reject and archive");
@@ -321,7 +453,7 @@ export default function SubmissionRequisitionPage({ params }: Props) {
             </div>
           </div>
         ) : null}
-
+		*/}
         <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
           <h3 style={{ marginTop: 0 }}>Submissions summary / Requisition {data.id}</h3>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -342,7 +474,7 @@ export default function SubmissionRequisitionPage({ params }: Props) {
                 <tr style={{ textAlign: "left" }}>
                   <th>Supplier</th>
                   <th>Invited / Manual</th>
-                  <th>Submitted rows</th>
+                  <th>Received rows</th>
                   <th style={{ width: 200 }}>Total</th>
                   <th></th>
                 </tr>
@@ -459,87 +591,51 @@ export default function SubmissionRequisitionPage({ params }: Props) {
           })}
         </div>
 
-        {/* Recommended prices (invoice-style) */}
-        <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Recommended approval package</h3>
-          <p style={{ marginTop: 0, color: "var(--muted)" }}>
-            This table shows the recommended approval package (unit prices multiplied by requested quantities).
-          </p>
-          <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ textAlign: "left" }}>
-                <th>No</th>
-                <th>Description</th>
-                <th>UOM</th>
-                <th>Qty</th>
-                <th>Unit price</th>
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recommendedLines.map((l) => (
-                <tr key={l.id} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td>{l.itemNo}</td>
-                  <td>{l.description}</td>
-                  <td>{l.uom}</td>
-                  <td>{Number.isFinite(l.qty) ? l.qty : ""}</td>
-                  <td>
-                    {l.currency} {Number.isFinite(l.unit) ? money(l.unit as number) : ""}
-                  </td>
-                  <td>
-                    {l.currency} {Number.isFinite(l.total) ? money(l.total as number) : ""}
-                  </td>
-                </tr>
-              ))}
-              {recommendedLines.length === 0 ? (
-                <tr>
-                  <td colSpan={6} style={{ color: "var(--muted)" }}>
-                    No recommended prices captured in approval package yet.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-            {recommendedLines.length > 0 ? (
-              <tfoot>
-                <tr>
-                  <td colSpan={5} style={{ textAlign: "right", fontWeight: 800 }}>
-                    Grand total
-                  </td>
-                  <td>
-                    {currencyGuess || (recommendedLines[0]?.currency || "")} {money(recommendedGrandTotal)}
-                  </td>
-                </tr>
-              </tfoot>
-            ) : null}
-          </table>
-        </div>
 
-        {isOfficer && supplierPrices.length > 0 ? (
+        {isOfficer && canEdit ? (
           <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              className="btn btn-primary"
-              disabled={loading || !supplierPrices.length}
-              onClick={async () => {
-                setError("");
-                setMessage("");
-                try {
-                  // Officer-side preparation of approval package:
-                  // 1) calculate reference prices from submissions
-                  await apiPost(`/requisitions/${data.id}/reference-price/calculate`, {});
-                  // 2) build bidding-form / approval package rows seeded with averages
-                  await apiPost(`/requisitions/${data.id}/bidding-form/prepare`, {});
-                  // 3) Navigate to the approval-package editor view so officers can
-                  //    review and adjust the recommended unit prices.
-                  if (typeof window !== "undefined") {
-                    window.location.href = `/requisitions/${data.id}/view`;
+            {supplierPrices.length > 0 ? (
+              <button
+                className="btn btn-primary"
+                disabled={loading || !supplierPrices.length}
+                onClick={async () => {
+                  setError("");
+                  setMessage("");
+                  try {
+                    // Officer-side preparation of approval package:
+                    // 1) calculate reference prices from submissions
+                    await apiPost(`/requisitions/${data.id}/reference-price/calculate`, {});
+                    // 2) build bidding-form / approval package rows seeded with averages
+                    await apiPost(`/requisitions/${data.id}/bidding-form/prepare`, {});
+                    // 3) Navigate to the approval-package editor view so officers can
+                    //    review and adjust the recommended unit prices.
+                    if (typeof window !== "undefined") {
+                      window.location.href = `/requisitions/${data.id}/view`;
+                    }
+                  } catch (e: any) {
+                    setError(e?.message || "Failed to prepare approval package");
                   }
-                } catch (e: any) {
-                  setError(e?.message || "Failed to prepare approval package");
-                }
-              }}
-            >
-              Prepare approval package
-            </button>
+                }}
+              >
+                Prepare approval package
+              </button>
+            ) : String(data?.status || "") !== "INVITATIONS_SENT" ? (
+              <>
+                <Link
+                  className="btn btn-primary"
+                  href={`/requisitions/${data.id}`}
+                >
+                  Send invitations to suppliers
+                </Link>
+                <button
+                  className="btn btn-primary"
+                  disabled={loading}
+                  onClick={() => window.location.href = `/requisitions/${data.id}/manual-submissions`}
+                >
+                  Switch to manual submissions
+                </button>
+              </>
+            ) : null}
             {data.manualSubmissions ? (
               <Link className="btn" href={`/requisitions/${data.id}/manual-submissions`}>
                 Add more submissions

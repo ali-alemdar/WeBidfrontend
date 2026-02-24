@@ -33,9 +33,9 @@ export default function AdminTenderAssignmentsPage() {
       ]);
       const all = Array.isArray(tendersResp) ? tendersResp : [];
 
-      // Filter for Tender Preparation stage only (exclude publishing stages)
-      const prepStatuses = new Set(["TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_PREP_APPROVED"]); 
-      const prepTenders = all.filter((t) => prepStatuses.has(String(t.status || "")));
+      // Filter for Tender Preparation stage: TENDER_READY requisitions or TENDER_PREP_* tenders
+      const tenderStatuses = new Set(["TENDER_READY", "TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_PREP_RETURNED", "TENDER_PREP_APPROVED"]);
+      const prepTenders = all.filter((t) => tenderStatuses.has(String(t.status || "")));
 
       const assigned = prepTenders.filter((row) => Array.isArray((row as any).officerAssignments) && (row as any).officerAssignments.length);
       const unassigned = prepTenders.filter((row) => !Array.isArray((row as any).officerAssignments) || (row as any).officerAssignments.length === 0);
@@ -122,7 +122,9 @@ export default function AdminTenderAssignmentsPage() {
       });
 
       await load();
-      await loadExistingForTender(selectedTenderId);
+      setSelectedTenderId(null);
+      setOfficerIds([]);
+      setPrepManagerId(null);
     } catch (e: any) {
       setError(e?.message || "Failed to save assignments");
     } finally {
@@ -411,7 +413,7 @@ export default function AdminTenderAssignmentsPage() {
                       style={{ borderBottom: "1px solid #e5e7eb" }}
                     >
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>
-                        TEN-{String(tender.tenderNumber || 0).padStart(5, "0")}
+                        TEN-{String(tender.tender_id || 0).padStart(5, "0")}
                       </td>
                       <td>{tender.requisition?.title || tender.title || "(Untitled)"}</td>
                       <td>{officers || "-"}</td>

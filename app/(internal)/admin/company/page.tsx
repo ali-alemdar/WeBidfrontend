@@ -17,6 +17,10 @@ export default function AdminCompanyProfilePage() {
   const [address, setAddress] = useState("");
   const [footerNote, setFooterNote] = useState("");
 
+  // Common bidding document settings
+  const [bannedCompaniesUrl, setBannedCompaniesUrl] = useState("");
+  const [incotermVersion, setIncotermVersion] = useState("");
+
   useEffect(() => {
     const load = async () => {
       setError("");
@@ -31,8 +35,13 @@ export default function AdminCompanyProfilePage() {
           setAddress(t.address || "");
           setFooterNote(t.footerNote || "");
         }
+        const settings = await apiGet("/tenant/tender-settings");
+        if (settings) {
+          setBannedCompaniesUrl(settings.banned_companies_url || "");
+          setIncotermVersion(settings.incoterms_version || "");
+        }
       } catch (e: any) {
-        setError(e?.message || "Failed to load company profile");
+        setError(e?.message || "Failed to load profile");
       } finally {
         setLoading(false);
       }
@@ -44,16 +53,22 @@ export default function AdminCompanyProfilePage() {
     setError("");
     setSaving(true);
     try {
-      await apiPut("/tenant/profile", {
-        name: name || null,
-        legalName: legalName || null,
-        logoUrl: logoUrl || null,
-        phone: phone || null,
-        address: address || null,
-        footerNote: footerNote || null,
-      });
+      await Promise.all([
+        apiPut("/tenant/profile", {
+          name: name || null,
+          legalName: legalName || null,
+          logoUrl: logoUrl || null,
+          phone: phone || null,
+          address: address || null,
+          footerNote: footerNote || null,
+        }),
+        apiPut("/tenant/tender-settings", {
+          banned_companies_url: bannedCompaniesUrl || "",
+          incoterms_version: incotermVersion || "",
+        }),
+      ]);
     } catch (e: any) {
-      setError(e?.message || "Failed to save company profile");
+      setError(e?.message || "Failed to save profile");
     } finally {
       setSaving(false);
     }
@@ -143,6 +158,30 @@ export default function AdminCompanyProfilePage() {
                   rows={3}
                   style={{ whiteSpace: "pre-wrap" }}
                   placeholder="Optional footer note for printed documents"
+                />
+              </label>
+
+              <hr style={{ margin: "16px 0", borderColor: "var(--border)" }} />
+
+              <h4 style={{ marginTop: 0, marginBottom: 12 }}>Common Bidding Document Settings</h4>
+
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Banned Companies List URL</div>
+                <input
+                  className="input"
+                  value={bannedCompaniesUrl}
+                  onChange={(e) => setBannedCompaniesUrl(e.target.value)}
+                  placeholder="URL to blacklist/banned companies document"
+                />
+              </label>
+
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>INCOTERMS Version</div>
+                <input
+                  className="input"
+                  value={incotermVersion}
+                  onChange={(e) => setIncotermVersion(e.target.value)}
+                  placeholder="Year of INCOTERMS (e.g., 2010, 2020)"
                 />
               </label>
 

@@ -63,7 +63,7 @@ export default function InternalPage({ title, children, pageId }: Props) {
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {user ? (
               <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                {user.name || user.email || ""}
+                {user.fullName || user.email || ""}
               </span>
             ) : null}
             <button className="btn" onClick={handleRefresh}>

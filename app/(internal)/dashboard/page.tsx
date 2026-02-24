@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import InternalPage from "../../components/InternalPage";
 import RequireRoles from "../../components/RequireRoles";
 import { apiGet } from "../../lib/api";
@@ -8,6 +9,21 @@ import { getCurrentUser } from "../../lib/authClient";
 import { PieChart } from "../../components/PieChart";
 
 export default function EmployeeDashboardPage() {
+  const router = useRouter();
+  const user = getCurrentUser();
+  const roles = ((user as any)?.roles || []) as string[];
+  const isGeneralManager = roles.includes("GENERAL_MANAGER");
+
+  // Redirect GM users to GM dashboard
+  useEffect(() => {
+    if (isGeneralManager) {
+      router.replace("/gm-dashboard");
+    }
+  }, [isGeneralManager, router]);
+
+  if (isGeneralManager) {
+    return <InternalPage title="Loading..."><p>Redirecting to GM dashboard...</p></InternalPage>;
+  }
   const [requisitions, setRequisitions] = useState<any[]>([]);
   const [tenders, setTenders] = useState<any[]>([]);
   const [publishingTenders, setPublishingTenders] = useState<any[]>([]);
@@ -20,9 +36,6 @@ export default function EmployeeDashboardPage() {
     "Tender Preparation": false,
     "Tender Publishing": false,
   });
-
-  const user = getCurrentUser();
-  const roles = ((user as any)?.roles || []) as string[];
   const isSysAdmin = roles.includes("SYS_ADMIN");
   const hasRequisitionOfficer = roles.includes("REQUISITION_OFFICER");
   const hasRequisitionManager = roles.includes("REQUISITION_MANAGER");
@@ -73,6 +86,7 @@ export default function EmployeeDashboardPage() {
             const publishingStatuses = new Set([
               "TENDER_PREP_COMPLETE",
               "TENDER_PUBLICATION_PREP",
+			  "TENDER_PREP_RETURNED",
               "TENDER_PUBLICATION_APPROVED",
               "TENDER_PUBLICATION_SIGNING",
               "READY_TO_PUBLISH",
@@ -83,7 +97,7 @@ export default function EmployeeDashboardPage() {
           } else {
             const results = await Promise.allSettled([
               apiGet("/tenders"),
-              apiGet("/tenders/archive/mine"),
+              apiGet("/tenders/archive"),
             ]);
             const tenderBase = results[0].status === 'fulfilled' && Array.isArray(results[0].value) ? results[0].value : [];
             const tenderArch = results[1].status === 'fulfilled' && Array.isArray(results[1].value) ? results[1].value : [];
@@ -104,7 +118,7 @@ export default function EmployeeDashboardPage() {
       }
     };
     load();
-  }, [hasTenderRole, isTenderManager, isSysAdmin]);
+  }, []);
 
   const archivedStatuses = new Set([
     "PURCHASE_READY",
@@ -180,7 +194,6 @@ export default function EmployeeDashboardPage() {
     PRICES_RECEIVED: palette.BLUE,
     PRICES_REVIEWED: palette.BLUE,
     REFERENCE_PRICE_CALCULATED: palette.BLUE,
-    BIDDING_FORM_PREPARED: palette.BLUE,
     TENDER_PREP_DRAFT: palette.BLUE,
     APROVAL_PENDING: palette.YELLOW,
     TENDER_READY: palette.BLUE,
@@ -247,9 +260,9 @@ export default function EmployeeDashboardPage() {
   }, [tenders]);
 
   const publishingStageTenders = useMemo(() => {
-    const pubStatuses = new Set(["TENDER_PREP_COMPLETE", "TENDER_PUBLICATION_PREP", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
-    return publishingTenders.filter((t) => pubStatuses.has(String(t.status || "")));
-  }, [publishingTenders]);
+    const pubStatuses = new Set(["TENDER_PREP_COMPLETE", "TENDER_PUBLICATION_PREP", "TENDER_PREP_RETURNED", "AWAITING_PUBLICATION_APPROVAL", "PUBLISHED", "TENDER_EDITING"]);
+    return tenders.filter((t) => pubStatuses.has(String(t.status || "")));
+  }, [tenders]);
 
   // Group items by status
   const groupByStatus = (items: any[]) => {
@@ -411,6 +424,93 @@ export default function EmployeeDashboardPage() {
               </div>
             </div>
           ) : null}
+
+          {user ? (() => {
+            const ninetyDaysAgo = new Date();
+            ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+            const currentUserId = user ? Number((user as any).id) : NaN;
+            // Collect all available items
+            const relevantItems = [...requisitions, ...tenders];
+
+            const assignedItems = relevantItems.filter((item) => {
+              const itemDate = new Date(item.createdAt || 0);
+              if (itemDate < ninetyDaysAgo) return false;
+              // For managers, show all items (they manage officers, not assigned directly)
+              // For tender managers, show all tenders
+              // For officers/others, show only items assigned to them
+              if (isManager || isTenderManager) return true;
+              const assignments = Array.isArray((item as any).officerAssignments)
+                ? (item as any).officerAssignments
+                : [];
+              return assignments.some((a: any) => Number(a?.userId) === currentUserId);
+            });
+
+            if (assignedItems.length === 0) {
+              return (
+                <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
+                  <h3 style={{ marginTop: 0 }}>My work summary</h3>
+                  <p style={{ color: "var(--muted)" }}>No tasks assigned in the last 3 months.</p>
+                </div>
+              );
+            }
+
+            // Chart 1: Current statuses
+            const statusCounts: Record<string, number> = {};
+            for (const item of assignedItems) {
+              const status = String(item.status || "");
+              statusCounts[status] = (statusCounts[status] || 0) + 1;
+            }
+
+            const statusSegments = Object.keys(statusCounts)
+              .map((status, idx) => ({
+                label: status.replace(/_/g, " "),
+                value: statusCounts[status],
+                color: ["#2563eb", "#eab308", "#22c55e", "#ef4444", "#0ea5e9", "#8b5cf6"][idx % 6],
+              }))
+              .sort((a, b) => b.value - a.value);
+
+            // Chart 2: Average time per status
+            const statusTimes: Record<string, { total: number; count: number }> = {};
+            for (const item of assignedItems) {
+              const status = String(item.status || "");
+              const created = new Date(item.createdAt || 0);
+              const updated = new Date(item.updatedAt || 0);
+              const daysInStatus = (updated.getTime() - created.getTime()) / (1000 * 60 * 60 * 24);
+              
+              if (!statusTimes[status]) {
+                statusTimes[status] = { total: 0, count: 0 };
+              }
+              statusTimes[status].total += daysInStatus;
+              statusTimes[status].count += 1;
+            }
+
+            const timeSegments = Object.keys(statusTimes)
+              .map((status, idx) => {
+                const avgDays = Math.round(statusTimes[status].total / statusTimes[status].count);
+                return {
+                  label: `${status.replace(/_/g, " ")} (${avgDays}d)`,
+                  value: statusTimes[status].count,
+                  color: ["#2563eb", "#eab308", "#22c55e", "#ef4444", "#0ea5e9", "#8b5cf6"][idx % 6],
+                };
+              })
+              .sort((a, b) => b.value - a.value);
+
+            return (
+              <div className="card" style={{ boxShadow: "none", marginBottom: 12 }}>
+                <h3 style={{ marginTop: 0 }}>My work summary (Last 90 days)</h3>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                  <PieChart
+                    title="Tasks by status"
+                    segments={statusSegments.length > 0 ? statusSegments : [{ label: "No data", value: 1, color: "#d1d5db" }]}
+                  />
+                  <PieChart
+                    title="Avg time per status"
+                    segments={timeSegments.length > 0 ? timeSegments : [{ label: "No data", value: 1, color: "#d1d5db" }]}
+                  />
+                </div>
+              </div>
+            );
+          })() : null}
 
           {selectedOfficerId != null ? (
             <div
@@ -616,6 +716,7 @@ export default function EmployeeDashboardPage() {
                                   <thead>
                                     <tr style={{ textAlign: "left", background: "#f9fafb" }}>
                                       <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>{category === "Requisitions" ? "ID" : "Tender #"}</th>
+ 									  <th style={{ width: 160, borderBottom: "1px solid #d1d5db" }}>Requisition</th>
                                       <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
                                       <th style={{ width: 160, borderBottom: "1px solid #d1d5db" }}>Department</th>
                                       <th style={{ width: 120, borderBottom: "1px solid #d1d5db" }}>Latest Activity</th>
@@ -636,6 +737,7 @@ export default function EmployeeDashboardPage() {
                                         ) : (
                                           <td>{item.id}</td>
                                         )}
+                                        <td>{category === "Requisitions" ? `REQ-${String(item.id).padStart(5, "0")}` : (item as any).requisitionId ? `REQ-${String((item as any).requisitionId).padStart(5, "0")}` : ""}</td>
                                         <td>{item.title || item.requisition?.title || item.description || ""}</td>
                                         <td>{item.requisition?.department?.name || (item as any).department?.name || ""}</td>
                                         <td style={{ fontVariantNumeric: "tabular-nums" }}>

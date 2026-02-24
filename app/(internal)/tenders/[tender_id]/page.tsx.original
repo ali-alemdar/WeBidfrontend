@@ -1,0 +1,951 @@
+"use client";
+
+import { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import InternalPage from "../../../components/InternalPage";
+import RequireRoles from "../../../components/RequireRoles";
+import { apiGet, apiPost } from "../../../lib/api";
+import { usePageLock } from "../../../lib/pageLock";
+import { getCurrentUser } from "../../../lib/authClient";
+
+interface Props {
+  params: { tenderId: string };
+}
+
+function isoLocal(dt: Date) {
+  // format as yyyy-MM-ddTHH:mm for input[type=datetime-local]
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+export default function TenderDetailPage({ params }: Props) {
+  const router = useRouter();
+  const idleTimeoutRef = useRef<any>(null);
+  const lastActivityRef = useRef(Date.now());
+
+  const {
+    data: lockData,
+    loading: lockLoading,
+    lockStatus,
+    lockInfo,
+    reload: reloadLock,
+  } = usePageLock({
+    resourceType: "TENDER",
+    resourceId: Number(params.tenderId.split("-")[1] || params.tenderId),
+    scope: "PREP_PAGE",
+    editUrl: `/tenders/${params.tenderId}`,
+    heartbeatUrl: `/tenders/${params.tenderId}/prep-lock/heartbeat`,
+    releaseUrl: `/tenders/${params.tenderId}/prep-lock/release`,
+    mapEditResponse: (res: any) => ({
+      data: res || {},
+      lockStatus: res?.lockStatus || "NONE",
+      lockInfo: res?.lockInfo || null,
+    }),
+  });
+
+  const [data, setData] = useState<any>(null);
+  const [copy, setCopy] = useState<any>(null);
+  const [workingItems, setWorkingItems] = useState<any[]>([]);
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [teamNotes, setTeamNotes] = useState<any[]>([]);
+  const [newTeamNote, setNewTeamNote] = useState<string>("");
+  const [savingTeamNote, setSavingTeamNote] = useState(false);
+  const [isIdle, setIsIdle] = useState(false);
+  const [lockReleased, setLockReleased] = useState(false); // NEW: Track if lock was released due to idle
+  const [approvals, setApprovals] = useState<any[]>([]);
+  const [returnNotes, setReturnNotes] = useState<string>("");
+  const [rejectNotes, setRejectNotes] = useState<string>("");
+  const [allReturnNotes, setAllReturnNotes] = useState<any[]>([]);
+  const [allRejectNotes, setAllRejectNotes] = useState<any[]>([]);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnModalReason, setReturnModalReason] = useState<string>("");
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectModalReason, setRejectModalReason] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"prep" | "publishing">("prep");
+  const [publishingData, setPublishingData] = useState<any>({
+    tender_number: "",
+    publication_tender_number: "",
+    tender_title: "",
+    tender_description: "",
+    submission_deadline_date: "",
+    submission_deadline_time: "",
+    opening_date: "",
+    clarification_contact_name: "",
+    clarification_address: "",
+    clarification_city: "",
+    clarification_postal_code: "",
+    clarification_phone: "",
+    clarification_fax: "",
+    clarification_email: "",
+  });
+  const [publishingCommodities, setPublishingCommodities] = useState<any[]>([]);
+  const [savingPublishing, setSavingPublishing] = useState(false);
+  const user = getCurrentUser();
+  const userRoles = (user?.roles || []) as string[];
+  const isOfficer = userRoles.includes("TENDERING_OFFICER") || userRoles.includes("SYS_ADMIN");
+  const isManager = userRoles.includes("TENDER_APPROVAL") || userRoles.includes("SYS_ADMIN");
+  const IDLE_TIMEOUT_MS = 30 * 1000;
+
+  const isApprovalInProgress = data?.status === "TENDER_PENDING_APPROVAL";
+  const isArchived = data?.status === "TENDER_ARCHIVED" || data?.status === "ARCHIVED" || data?.status === "ARCHIVED_TENDER";
+  const anyOfficerApproved = approvals.some((a: any) => a.decision === "APPROVED");
+  const canEdit = lockStatus === "OWNED" && !isIdle && !lockReleased && !isApprovalInProgress && !isArchived && !anyOfficerApproved;
+
+  // Track idle time
+  useEffect(() => {
+    if (lockStatus !== "OWNED") return;
+    
+    // If lock was already released, don't track idle anymore
+    if (lockReleased) return;
+	
+    const handleActivity = () => {
+      // CRITICAL: Clear timeout FIRST to prevent race condition
+      if (idleTimeoutRef.current) {
+        clearTimeout(idleTimeoutRef.current);
+        idleTimeoutRef.current = null;
+      }
+      
+      const wasIdle = isIdle;
+      setIsIdle(false);
+      lastActivityRef.current = Date.now();
+      
+      // If we were idle, DON'T reload - user must manually refresh the page
+      // This prevents automatic lock reacquisition
+
+      // Set new timeout
+      idleTimeoutRef.current = setTimeout(async () => {
+        setIsIdle(true);
+        setLockReleased(true);
+
+        try {
+          await apiPost(`/tenders/${params.tenderId}/prep-lock/release`, {});
+
+          // DO NOT call reloadLock() - it will re-acquire the lock!
+        } catch (error) {
+          console.error('Failed to release lock:', error);
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const events = ["mousedown", "keydown", "scroll", "touchstart"];
+    for (const event of events) {
+      window.addEventListener(event, handleActivity);
+    }
+
+    handleActivity();
+
+    return () => {
+      for (const event of events) {
+        window.removeEventListener(event, handleActivity);
+      }
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    };
+  }, [lockStatus, params.tenderId, lockReleased, isIdle]);
+
+  const load = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const t = await apiGet(`/tenders/${params.tenderId}`);
+      const [c, w, notes, approv, retNotes, rejNotes, pubData] = await Promise.all([
+        apiGet(`/tenders/${params.tenderId}/requisition-copy`),
+        apiGet(`/tenders/${params.tenderId}/prep-items`),
+        t?.requisitionId ? apiGet(`/requisitions/${t.requisitionId}/notes`).catch(() => []) : Promise.resolve([]),
+        apiGet(`/tenders/${params.tenderId}/prep-approvals`).catch(() => ({ approvals: [] })),
+        apiGet(`/tenders/${params.tenderId}/prep-return-notes`).catch(() => ({ notes: [] })),
+        apiGet(`/tenders/${params.tenderId}/prep-reject-notes`).catch(() => ({ notes: [] })),
+        apiGet(`/tenders/${params.tenderId}/publishing-data`).catch(() => null)
+      ]);
+      setData(t);
+      setCopy(c);
+      setTeamNotes(Array.isArray(notes) ? notes : []);
+      // Transform approvals: extract user info and flatten structure
+      const transformedApprovals = (approv?.approvals || []).map((approval: any) => ({
+        userId: approval.userId,
+        fullName: approval.user?.firstName && approval.user?.lastName ? `${approval.user.firstName} ${approval.user.lastName}` : approval.user?.email || "Unknown",
+        email: approval.user?.email || "",
+        decision: approval.decision || "PENDING",
+        notes: approval.notes,
+        decidedAt: approval.decidedAt,
+      }));
+      setApprovals(transformedApprovals);
+      // Set all notes (newest first)
+      setAllReturnNotes((retNotes?.notes || []).reverse());
+      setAllRejectNotes((rejNotes?.notes || []).reverse());
+      // Also set latest for compatibility
+      setReturnNotes(retNotes?.reason || "");
+      setRejectNotes(rejNotes?.reason || "");
+      // Load publishing data if available
+      if (pubData?.section0Data) {
+        const contact = pubData.section0Data.clarification_contact || {};
+        const metadata = pubData.section0Data.tender_metadata || {};
+        setPublishingData({
+          tender_number: metadata.tender_number || (t?.tender_id ? `TEN-${String(t.tender_id).padStart(5, "0")}` : ""),
+          publication_tender_number: metadata.publication_tender_number || "",
+          tender_title: metadata.tender_title || c?.title || "",
+          tender_description: metadata.tender_description || c?.description || "",
+          submission_deadline_date: metadata.submission_deadline_date || "",
+          submission_deadline_time: metadata.submission_deadline_time || "",
+          opening_date: metadata.opening_date || "",
+          clarification_contact_name: contact.clarification_contact_name || "",
+          clarification_address: contact.clarification_address || "",
+          clarification_city: contact.clarification_city || "",
+          clarification_postal_code: contact.clarification_postal_code || "",
+          clarification_phone: contact.clarification_phone || "",
+          clarification_fax: contact.clarification_fax || "",
+          clarification_email: contact.clarification_email || "",
+        });
+      } else {
+        // Auto-populate with defaults
+        setPublishingData({
+          tender_number: t?.tender_id ? `TEN-${String(t.tender_id).padStart(5, "0")}` : "",
+          publication_tender_number: "",
+          tender_title: c?.title || "",
+          tender_description: c?.description || "",
+          submission_deadline_date: "",
+          submission_deadline_time: "",
+          opening_date: "",
+          clarification_contact_name: "",
+          clarification_address: "",
+          clarification_city: "",
+          clarification_postal_code: "",
+          clarification_phone: "",
+          clarification_fax: "",
+          clarification_email: "",
+        });
+      }
+      // Load commodities from publishing data or use prep items
+      if (pubData?.section2Data?.commodities) {
+        setPublishingCommodities(pubData.section2Data.commodities);
+      } else {
+        // Auto-populate commodities from working items
+        const commodities = (w || []).map((item: any) => ({
+          commodity_item_number: String(item.itemNo || ""),
+          commodity_description: item.description || "",
+          commodity_quantity: item.quantity || 0,
+          commodity_unit: item.uom || "",
+          item_type: "MATERIAL",
+          date_of_delivery: item.dateOfDelivery || "",
+          unit_price: item.unitPrice || 0,
+          total_price: item.totalPrice || 0,
+          country_of_origin: item.countryOfOrigin || "",
+          currency: item.currency || "IQD",
+          quantity_increase_limit: 10,
+          quantity_decrease_limit: 10,
+        }));
+        setPublishingCommodities(commodities);
+      }
+      const items = Array.isArray(w) && w.length > 0 
+        ? w.map((item: any) => ({
+            itemNo: item.itemNo,
+            description: item.description,
+            dateOfDelivery: item.dateOfDelivery,
+            uom: item.uom,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+            countryOfOrigin: item.countryOfOrigin,
+            currency: item.currency,
+          }))
+        : (c?.items || []).map((item: any) => ({
+            itemNo: item.itemNo,
+            description: item.description,
+            dateOfDelivery: item.dateOfDelivery,
+            uom: item.uom,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.totalPrice,
+            countryOfOrigin: item.countryOfOrigin,
+            currency: item.currency,
+          }));
+      setWorkingItems(items);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load tender");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveItems = async () => {
+    // Validate lock is still owned before saving
+    await reloadLock();
+    
+    if (lockStatus !== "OWNED" || isIdle) {
+      setError("Lock was lost or you're idle. Cannot save.");
+      return;
+    }
+    
+    // Validate UOM and Quantity are not empty
+    for (let i = 0; i < workingItems.length; i++) {
+      const item = workingItems[i];
+      if (!item.uom || String(item.uom).trim() === "") {
+        setError(`Item ${i + 1}: UOM is required`);
+        return;
+      }
+      if (item.quantity === null || item.quantity === undefined || item.quantity === "" || item.quantity === 0) {
+        setError(`Item ${i + 1}: Quantity is required`);
+        return;
+      }
+    }
+    
+    setSaving(true);
+    setError("");
+    try {
+      await apiPost(`/tenders/${params.tenderId}/items`, { items: workingItems });
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to save items");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateItem = (idx: number, field: string, value: any) => {
+    const updated = [...workingItems];
+    updated[idx] = { ...updated[idx], [field]: value };
+    setWorkingItems(updated);
+  };
+
+  const deleteItem = (idx: number) => {
+    setWorkingItems(workingItems.filter((_, i) => i !== idx));
+  };
+
+  const addItem = () => {
+    const maxItemNo = workingItems.reduce((max, item) => {
+      const num = item.itemNo ? Number(item.itemNo) : 0;
+      return num > max ? num : max;
+    }, 0);
+    setWorkingItems([
+      ...workingItems,
+      {
+        itemNo: maxItemNo + 1,
+        description: "",
+        dateOfDelivery: "",
+        uom: "",
+        quantity: null,
+        unitPrice: 0,
+        totalPrice: 0,
+        countryOfOrigin: "",
+        currency: "",
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    load();
+    // Auto-refresh every 15 seconds for manager notes
+    const intervalId = setInterval(() => {
+      load().catch(() => undefined);
+    }, 15_000);
+    return () => clearInterval(intervalId);
+  }, [params.tenderId]);
+
+  const action = async (name: string, path: string, body: any = {}) => {
+    setError("");
+    setActing(name);
+    try {
+      await apiPost(path, body);
+      // Redirect to approval queue if manager approved, returned, or rejected
+      if (isManager && ["managerApprove", "return", "reject"].includes(name)) {
+        router.push("/tenders/waiting-approvals");
+      } else {
+        await load();
+      }
+    } catch (e: any) {
+      setError(e?.message || "Action failed");
+    } finally {
+      setActing("");
+    }
+  };
+
+  const tenderDisplay = data?.tender_id ? `TEN-${String(data.tender_id).padStart(5, "0")}` : params.tenderId;
+
+  return (
+	<RequireRoles anyOf={["TENDERING_OFFICER", "TENDER_APPROVAL", "SYS_ADMIN"]} title={`Tender ${tenderDisplay}`}>
+		  <InternalPage title={`Tender ${tenderDisplay}`}>
+
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {data?.status && <span className="pill">Status: {data.status}</span>}
+          {data?.tender_id && (
+            <span className="pill">ID: TEN-{String(data.tender_id).padStart(5, "0")}</span>
+          )}
+          {data?.requisitionId && (
+            <span className="pill">Requisition: {data.requisitionId}</span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link className="btn" href="/tenders">Back</Link>
+          <Link className="btn" href={`/tenders/${params.tenderId}/clarifications`}>Clarifications & Addenda</Link>
+          <button className="btn" onClick={load} disabled={loading}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
+
+      {/* Lock status */}
+      {lockStatus === "LOCKED" && lockInfo && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>⚠️ Edit locked:</strong> This tender is currently being edited by{" "}
+          <strong>{lockInfo.lockedByName || "another user"}</strong>.
+          You cannot make changes until they release the lock.
+        </div>
+      )}
+      {lockStatus === "OWNED" && !isIdle && !lockReleased && (
+        <div style={{ backgroundColor: "#dcfce7", color: "#166534", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #86efac" }}>
+          <strong>✅ Lock acquired:</strong> You are editing this tender. The lock will automatically release after 30 seconds of inactivity.
+        </div>
+      )}
+      {lockReleased && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>⚠️ Lock released due to inactivity:</strong> Please refresh the page to edit again.
+        </div>
+      )}
+
+      {/* Tab selector - show if status allows publishing edits */}
+      {data && ["TENDER_MANAGER_APPROVAL", "GM_APPROVAL_PENDING", "TENDER_PREP_COMPLETE"].includes(data.status) && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid var(--border)" }}>
+          <button
+            onClick={() => setActiveTab("prep")}
+            style={{
+              padding: "8px 16px",
+              border: "none",
+              background: activeTab === "prep" ? "var(--primary)" : "transparent",
+              color: activeTab === "prep" ? "white" : "inherit",
+              cursor: "pointer",
+              fontWeight: activeTab === "prep" ? "bold" : "normal",
+              borderBottom: activeTab === "prep" ? "2px solid var(--primary)" : "none",
+            }}
+          >
+            Tender Preparation
+          </button>
+          <button
+            onClick={() => setActiveTab("publishing")}
+            style={{
+              padding: "8px 16px",
+              border: "none",
+              background: activeTab === "publishing" ? "var(--primary)" : "transparent",
+              color: activeTab === "publishing" ? "white" : "inherit",
+              cursor: "pointer",
+              fontWeight: activeTab === "publishing" ? "bold" : "normal",
+              borderBottom: activeTab === "publishing" ? "2px solid var(--primary)" : "none",
+            }}
+          >
+            Publishing Variables
+          </button>
+        </div>
+      )}
+
+      {/* Show prep content or publishing content based on active tab */}
+      {activeTab === "prep" && (
+        <>
+          {/* Approval Actions */}
+          {data && (isOfficer || isManager) && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                {/* Officer Approve Button - show if in draft/returned status and user hasn't approved yet */}
+                {isOfficer && (data.status === "TENDER_PREP_DRAFT" || data.status === "TENDER_PREP_RETURNED") && 
+                  !approvals.find((a: any) => a.userId === user?.id && a.decision === "APPROVED") && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => action("approve", `/tenders/${params.tenderId}/prep-approvals/officer-approve`, { notes: null })}
+                    disabled={acting === "approve"}
+                  >
+                    {acting === "approve" ? "Approving..." : "✓ Approve"}
+                  </button>
+                )}
+                
+                {/* Officer Cancel Approval Button - show if already approved and not manager approved yet */}
+                {isOfficer && data.status !== "TENDER_PREP_APPROVED" && 
+                  approvals.find((a: any) => a.userId === user?.id && a.decision === "APPROVED") && (
+                  <button
+                    className="btn"
+                    onClick={() => action("cancel", `/tenders/${params.tenderId}/prep-approvals/officer-cancel`, {})}
+                    disabled={acting === "cancel"}
+                    style={{ color: "#b91c1c" }}
+                  >
+                    {acting === "cancel" ? "Cancelling..." : "✗ Cancel my approval"}
+                  </button>
+                )}
+                
+                {/* Manager Approve Button - show if in pending approval status */}
+                {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => action("managerApprove", `/tenders/${params.tenderId}/prep-approvals/manager-approve`, {})}
+                    disabled={acting === "managerApprove"}
+                  >
+                    {acting === "managerApprove" ? "Approving..." : "✓ Approve"}
+                  </button>
+                )}
+                
+                {/* Manager Return Button - show if in pending approval status */}
+                {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                  <button
+                    className="btn"
+                    onClick={() => setShowReturnModal(true)}
+                    disabled={acting !== ""}
+                  >
+                    ↩️ Return for Changes
+                  </button>
+                )}
+                
+                {/* Manager Reject Button - show if in pending approval status */}
+                {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                  <button
+                    className="btn"
+                    onClick={() => setShowRejectModal(true)}
+                    disabled={acting !== ""}
+                    style={{ color: "#b91c1c" }}
+                  >
+                    ✗ Reject & Close
+                  </button>
+                )}
+              </div>
+            )}
+
+            {loading && !data ? (
+              <p>Loading…</p>
+            ) : !data ? (
+              <p>Not found.</p>
+            ) : (
+              <>
+                {/* Return Notes - show all as history */}
+                {allReturnNotes.length > 0 && (
+                  <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+                    <strong>📝 Manager Notes - Return for Changes</strong>
+                    <div style={{ marginTop: 12 }}>
+                      {allReturnNotes.map((note: any, idx: number) => (
+                        <div key={idx} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: idx < allReturnNotes.length - 1 ? "1px solid rgba(0,0,0,0.1)" : "none" }}>
+                          <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
+                            {note.createdAt ? new Date(note.createdAt).toLocaleString() : ""}
+                          </div>
+                          <div style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 13 }}>{note.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Reject Notes - show all as history */}
+                {allRejectNotes.length > 0 && (
+                  <div style={{ backgroundColor: "#fee2e2", color: "#b91c1c", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fca5a5" }}>
+                    <strong>❌ Manager Notes - Tender Rejected</strong>
+                    <div style={{ marginTop: 12 }}>
+                      {allRejectNotes.map((note: any, idx: number) => (
+                        <div key={idx} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: idx < allRejectNotes.length - 1 ? "1px solid rgba(0,0,0,0.1)" : "none" }}>
+                          <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
+                            {note.createdAt ? new Date(note.createdAt).toLocaleString() : ""}
+                          </div>
+                          <div style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 13 }}>{note.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {copy?.items && copy.items.length > 0 && (
+                  <div className="card" style={{ marginBottom: 12 }}>
+                    <h3 style={{ marginTop: 0 }}>Original Requisition Items (Read-only)</h3>
+                    <div style={{ overflowX: "auto" }}>
+                      <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse", minWidth: 900 }}>
+                        <thead>
+                          <tr style={{ textAlign: "left", background: "var(--surface-2)", fontSize: "12px" }}>
+                            <th>Item No.</th>
+                            <th>Description</th>
+                            <th>Date of Delivery</th>
+                            <th>UOM</th>
+                            <th>Quantities</th>
+                            <th>Unit Price DDP</th>
+                            <th>Total Price</th>
+                            <th>Country of Origin</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {copy.items.map((item: any, idx: number) => (
+                            <tr key={idx} style={{ borderTop: "1px solid var(--border)", fontSize: "12px" }}>
+                              <td>{item.itemNo || "—"}</td>
+                              <td>{item.description || "—"}</td>
+                              <td>{item.dateOfDelivery || "—"}</td>
+                              <td>{item.uom || "—"}</td>
+                              <td style={{ textAlign: "right" }}>{item.quantity || "—"}</td>
+                              <td style={{ textAlign: "right" }}>{item.unitPrice ? `${item.currency || ""} ${item.unitPrice.toLocaleString()}` : "—"}</td>
+                              <td style={{ textAlign: "right" }}>{item.totalPrice ? `${item.currency || ""} ${item.totalPrice.toLocaleString()}` : "—"}</td>
+                              <td>{item.countryOfOrigin || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {workingItems && workingItems.length > 0 && (
+                  <div className="card" style={{ marginBottom: 12 }}>
+                    <h3 style={{ marginTop: 0 }}>Items (Editable)</h3>
+                    <div style={{ overflowX: "auto" }}>
+                    <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse", minWidth: 1200 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", fontSize: "12px" }}>
+                          <th>Item No.</th>
+                          <th>Description</th>
+                          <th>Date of Delivery</th>
+                          <th>UOM</th>
+                          <th>Quantities</th>
+                          <th>Unit Price DDP</th>
+                          <th>Total Price</th>
+                          <th>Country of Origin</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {workingItems.map((item: any, idx: number) => (
+                          <tr key={idx} style={{ borderTop: "1px solid var(--border)", fontSize: "12px" }}>
+                            <td style={{ textAlign: "right", fontWeight: "bold", color: "#666" }}>{item.itemNo || "—"}</td>
+                            <td><input type="text" className="input" value={item.description || ""} onChange={(e) => updateItem(idx, "description", e.target.value)} style={{ width: "100%", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="text" className="input" value={item.dateOfDelivery || ""} onChange={(e) => updateItem(idx, "dateOfDelivery", e.target.value)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="text" className="input" value={item.uom || ""} onChange={(e) => updateItem(idx, "uom", e.target.value)} style={{ width: "70px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="number" className="input" value={item.quantity ?? ""} onChange={(e) => updateItem(idx, "quantity", e.target.value ? parseFloat(e.target.value) : null)} style={{ width: "80px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="number" className="input" value={item.unitPrice || 0} onChange={(e) => updateItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="number" className="input" value={item.totalPrice || 0} onChange={(e) => updateItem(idx, "totalPrice", parseFloat(e.target.value) || 0)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td><input type="text" className="input" value={item.countryOfOrigin || ""} onChange={(e) => updateItem(idx, "countryOfOrigin", e.target.value)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                            <td style={{ textAlign: "center" }}><button className="btn btn-sm" onClick={() => deleteItem(idx)} style={{ padding: "2px 6px", fontSize: "11px", background: "#dc2626", color: "white" }} disabled={!canEdit} title={!canEdit ? "Cannot delete: page is locked by another user" : undefined}>Delete</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                      <button
+                        className="btn btn-primary"
+                        onClick={saveItems}
+                        disabled={saving || !canEdit}
+                        title={!canEdit ? "Cannot save: page is locked by another user" : undefined}
+                      >
+                        {saving ? "Saving..." : "Save Items"}
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={addItem}
+                        disabled={saving || !canEdit}
+                        title={!canEdit ? "Cannot add item: page is locked by another user" : undefined}
+                      >
+                        + Add Item
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+      )}
+
+      {/* Publishing Variables Tab */}
+      {activeTab === "publishing" && data && (
+        <>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Tender Metadata</h3>
+            <div style={{ display: "grid", gap: 12 }}>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Publication Tender Number (XX/YYYY) *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.publication_tender_number}
+                  onChange={(e) => setPublishingData({ ...publishingData, publication_tender_number: e.target.value })}
+                  placeholder="e.g., 01/2025"
+                  maxLength={7}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Tender Title *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.tender_title}
+                  onChange={(e) => setPublishingData({ ...publishingData, tender_title: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Tender Description</div>
+                <textarea
+                  className="input"
+                  value={publishingData.tender_description}
+                  onChange={(e) => setPublishingData({ ...publishingData, tender_description: e.target.value })}
+                  rows={4}
+                  style={{ width: "100%", whiteSpace: "pre-wrap" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Submission Deadline Date *</div>
+                <input
+                  className="input"
+                  type="date"
+                  value={publishingData.submission_deadline_date}
+                  onChange={(e) => setPublishingData({ ...publishingData, submission_deadline_date: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Submission Deadline Time *</div>
+                <input
+                  className="input"
+                  type="time"
+                  value={publishingData.submission_deadline_time}
+                  onChange={(e) => setPublishingData({ ...publishingData, submission_deadline_time: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Opening Date</div>
+                <input
+                  className="input"
+                  type="date"
+                  value={publishingData.opening_date}
+                  onChange={(e) => setPublishingData({ ...publishingData, opening_date: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Clarification Contact</h3>
+            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, 1fr)" }}>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Contact Name *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_contact_name}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_contact_name: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Email *</div>
+                <input
+                  className="input"
+                  type="email"
+                  value={publishingData.clarification_email}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_email: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Address *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_address}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_address: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Phone *</div>
+                <input
+                  className="input"
+                  type="tel"
+                  value={publishingData.clarification_phone}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_phone: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>City *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_city}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_city: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Postal Code</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_postal_code}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_postal_code: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+              <label style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Fax</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_fax}
+                  onChange={(e) => setPublishingData({ ...publishingData, clarification_fax: e.target.value })}
+                  style={{ width: "100%" }}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setSavingPublishing(true);
+                apiPost(`/tenders/${params.tenderId}/publishing-data`, {
+                  section0Data: {
+                    tender_metadata: {
+                      tender_number: publishingData.tender_number,
+                      publication_tender_number: publishingData.publication_tender_number,
+                      tender_title: publishingData.tender_title,
+                      tender_description: publishingData.tender_description,
+                      submission_deadline_date: publishingData.submission_deadline_date,
+                      submission_deadline_time: publishingData.submission_deadline_time,
+                      opening_date: publishingData.opening_date,
+                    },
+                    clarification_contact: {
+                      clarification_contact_name: publishingData.clarification_contact_name,
+                      clarification_address: publishingData.clarification_address,
+                      clarification_city: publishingData.clarification_city,
+                      clarification_postal_code: publishingData.clarification_postal_code,
+                      clarification_phone: publishingData.clarification_phone,
+                      clarification_fax: publishingData.clarification_fax,
+                      clarification_email: publishingData.clarification_email,
+                    },
+                  },
+                  section2Data: { commodities: publishingCommodities },
+                  section4Data: { commodities: publishingCommodities },
+                  section6Data: { commodities: publishingCommodities },
+                }).then(() => {
+                  setError("");
+                  load();
+                }).catch((e: any) => setError(e?.message || "Failed to save")).finally(() => setSavingPublishing(false));
+              }}
+              disabled={savingPublishing}
+            >
+              {savingPublishing ? "Saving..." : "Save Publishing Variables"}
+            </button>
+          </div>
+        </>
+      )}
+      
+      {/* Return Modal */}
+      {showReturnModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "white",
+            padding: 24,
+            borderRadius: 8,
+            maxWidth: 500,
+            width: "90%",
+          }}>
+            <h3 style={{ marginTop: 0 }}>Return for Changes</h3>
+            <p>Please provide notes for the officers about what changes are needed:</p>
+            <textarea
+              className="input"
+              value={returnModalReason}
+              onChange={(e) => setReturnModalReason(e.target.value)}
+              placeholder="Enter notes..."
+              style={{ width: "100%", minHeight: 120, marginBottom: 12, fontFamily: "monospace" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setShowReturnModal(false);
+                  setReturnModalReason("");
+                }}
+                disabled={acting !== ""}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  action("return", `/tenders/${params.tenderId}/prep-approvals/manager-return`, { reason: returnModalReason });
+                }}
+                disabled={acting !== "" || !returnModalReason.trim()}
+              >
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Reject Modal */}
+      {showRejectModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "white",
+            padding: 24,
+            borderRadius: 8,
+            maxWidth: 500,
+            width: "90%",
+          }}>
+            <h3 style={{ marginTop: 0, color: "#b91c1c" }}>Reject & Close Tender</h3>
+            <p style={{ color: "#b91c1c" }}>This action will close the tender. Please provide a reason:</p>
+            <textarea
+              className="input"
+              value={rejectModalReason}
+              onChange={(e) => setRejectModalReason(e.target.value)}
+              placeholder="Enter reason for rejection..."
+              style={{ width: "100%", minHeight: 120, marginBottom: 12, fontFamily: "monospace" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setShowRejectModal(false);
+                  setRejectModalReason("");
+                }}
+                disabled={acting !== ""}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  action("reject", `/tenders/${params.tenderId}/prep-approvals/manager-reject`, { reason: rejectModalReason });
+                }}
+                disabled={acting !== "" || !rejectModalReason.trim()}
+                style={{ color: "white", backgroundColor: "#b91c1c" }}
+              >
+                Reject & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </InternalPage>
+    </RequireRoles>
+  );
+}

@@ -48,7 +48,8 @@ export default function SubmissionsHubPage() {
   }, []);
 
   const filtered = useMemo(() => {
-    // Hide fully rejected / purchase-ready requisitions; they should only appear in Archive.
+    // Show all statuses except REQUISITION_REJECTED and PURCHASE_READY (archive only)
+    // REQUISITION_RETURNED should be shown so managers can review and resubmit
     const nonRejected = rows.filter((r) => {
       const s = String(r.status || "");
       return s !== "REQUISITION_REJECTED" && s !== "PURCHASE_READY";
@@ -88,8 +89,8 @@ export default function SubmissionsHubPage() {
               <th>Manual</th>
               <th>Items</th>
               <th>Invited</th>
-              <th>Submitted</th>
-              <th>Last submission</th>
+              <th>Received</th>
+              <th>Last update</th>
               <th></th>
             </tr>
           </thead>

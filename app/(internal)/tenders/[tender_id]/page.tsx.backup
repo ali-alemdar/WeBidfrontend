@@ -1,0 +1,1685 @@
+"use client";
+
+import { useEffect, useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import InternalPage from "../../../components/InternalPage";
+import BackButton from "../../../components/BackButton";
+import RequireRoles from "../../../components/RequireRoles";
+import SignatureCanvas from "../../../components/SignatureCanvas";
+import { apiGet, apiPost } from "../../../lib/api";
+import { getCurrentUser } from "../../../lib/authClient";
+import { usePageLock } from "../../../lib/pageLock";
+
+interface Props {
+  params: { tender_id: string };
+}
+
+function isoLocal(dt: Date) {
+  // format as yyyy-MM-ddTHH:mm for input[type=datetime-local]
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+export default function TenderDetailPage({ params }: Props) {
+  const router = useRouter();
+  const idleTimeoutRef = useRef<any>(null);
+  const lastActivityRef = useRef(Date.now());
+
+  const {
+    data: lockData,
+    loading: lockLoading,
+    lockStatus,
+    lockInfo,
+    reload: reloadLock,
+  } = usePageLock({
+    resourceType: "TENDER",
+    resourceId: Number(params.tender_id),
+    scope: "PREP_PAGE",
+    editUrl: `/tenders/${params.tender_id}`,
+    heartbeatUrl: `/tenders/${params.tender_id}/prep-lock/heartbeat`,
+    releaseUrl: `/tenders/${params.tender_id}/prep-lock/release`,
+    mapEditResponse: (res: any) => ({
+      data: res || {},
+      lockStatus: res?.lockStatus || "NONE",
+      lockInfo: res?.lockInfo || null,
+    }),
+  });
+
+  const [data, setData] = useState<any>(null);
+  const [copy, setCopy] = useState<any>(null);
+  const [workingItems, setWorkingItems] = useState<any[]>([]);
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [teamNotes, setTeamNotes] = useState<any[]>([]);
+  const [newTeamNote, setNewTeamNote] = useState<string>("");
+  const [savingTeamNote, setSavingTeamNote] = useState(false);
+  const [isIdle, setIsIdle] = useState(false);
+  const [lockReleased, setLockReleased] = useState(false); // NEW: Track if lock was released due to idle
+  const [approvals, setApprovals] = useState<any[]>([]);
+  const [returnNotes, setReturnNotes] = useState<string>("");
+  const [rejectNotes, setRejectNotes] = useState<string>("");
+  const [allReturnNotes, setAllReturnNotes] = useState<any[]>([]);
+  const [allRejectNotes, setAllRejectNotes] = useState<any[]>([]);
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnModalReason, setReturnModalReason] = useState<string>("");
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectModalReason, setRejectModalReason] = useState<string>("");
+  const [showGMSignatureCanvas, setShowGMSignatureCanvas] = useState(false);
+  const [activeTab, setActiveTab] = useState<"prep" | "publishing" | "section8">("prep");
+  const [currencies, setCurrencies] = useState<any[]>([]);
+  const [publishingData, setPublishingData] = useState<any>({
+    tender_number: "",
+    publication_tender_number: "",
+    tender_title: "",
+    tender_description: "",
+    submission_deadline_date: "",
+    submission_deadline_time: "",
+    opening_date: "",
+    letter_number: "",
+    letter_date: "",
+    tender_doc_price: "",
+    clarification_contact_name: "",
+    clarification_address: "",
+    clarification_city: "",
+    clarification_postal_code: "",
+    clarification_phone: "",
+    clarification_fax: "",
+    clarification_email: "",
+    buyer_name: "",
+    buyer_address: "",
+    buyer_city: "",
+    buyer_postal_code: "",
+    buyer_phone: "",
+    buyer_fax: "",
+    buyer_email: "",
+    buyer_country: "",
+  });
+  const [publishingCommodities, setPublishingCommodities] = useState<any[]>([]);
+  const [savingPublishing, setSavingPublishing] = useState(false);
+  const [section8Data, setSection8Data] = useState<any>({ bidding_currency: "IQD" });
+  const [savingSection8, setSavingSection8] = useState(false);
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const user = getCurrentUser();
+  const userRoles = (user?.roles || []) as string[];
+  const isOfficer = userRoles.includes("TENDERING_OFFICER") || userRoles.includes("SYS_ADMIN");
+  const isManager = userRoles.includes("TENDER_APPROVAL") || userRoles.includes("SYS_ADMIN");
+  const isGM = userRoles.includes("GENERAL_MANAGER") || userRoles.includes("SYS_ADMIN");
+  const IDLE_TIMEOUT_MS = 30 * 1000;
+
+  const isApprovalInProgress = data?.status === "TENDER_PENDING_APPROVAL" || data?.status === "GM_APPROVAL_PENDING";
+  const isArchived = data?.status === "TENDER_ARCHIVED" || data?.status === "ARCHIVED" || data?.status === "ARCHIVED_TENDER";
+  const anyOfficerApproved = approvals.some((a: any) => a.decision === "APPROVED");
+  const canEdit = lockStatus === "OWNED" && !isIdle && !lockReleased && !isApprovalInProgress && !isArchived && !anyOfficerApproved;
+
+  // Track idle time
+  useEffect(() => {
+    if (lockStatus !== "OWNED") return;
+    
+    // If lock was already released, don't track idle anymore
+    if (lockReleased) return;
+
+    const handleActivity = () => {
+      // CRITICAL: Clear timeout FIRST to prevent race condition
+      if (idleTimeoutRef.current) {
+        clearTimeout(idleTimeoutRef.current);
+        idleTimeoutRef.current = null;
+      }
+      
+      const wasIdle = isIdle;
+      setIsIdle(false);
+      lastActivityRef.current = Date.now();
+      
+      // If we were idle, DON'T reload - user must manually refresh the page
+      // This prevents automatic lock reacquisition
+
+      // Set new timeout
+      idleTimeoutRef.current = setTimeout(async () => {
+        setIsIdle(true);
+        setLockReleased(true);
+
+        try {
+          await apiPost(`/tenders/${params.tender_id}/prep-lock/release`, {});
+
+          // DO NOT call reloadLock() - it will re-acquire the lock!
+        } catch (error) {
+          console.error('Failed to release lock:', error);
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const events = ["mousedown", "keydown", "scroll", "touchstart"];
+    for (const event of events) {
+      window.addEventListener(event, handleActivity);
+    }
+
+    handleActivity();
+
+    return () => {
+      for (const event of events) {
+        window.removeEventListener(event, handleActivity);
+      }
+      if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    };
+  }, [lockStatus, params.tender_id, lockReleased, isIdle]);
+
+  const load = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      const t = await apiGet(`/tenders/${params.tender_id}`);
+      
+      // If we loaded with a UUID but got back a numeric tender_id, redirect to the numeric URL
+      if (t?.tender_id && params.tender_id.includes('-')) {
+        router.replace(`/tenders/${t.tender_id}`);
+      }
+      const [c, w, notes, approv, retNotes, rejNotes, pubData] = await Promise.all([
+        apiGet(`/tenders/${params.tender_id}/requisition-copy`).catch((e) => { console.error('Failed to load requisition copy:', e); return null; }),
+        apiGet(`/tenders/${params.tender_id}/prep-items`).catch((e) => { console.error('Failed to load prep items:', e); return null; }),
+        apiGet(`/tenders/${params.tender_id}/notes`).catch(() => []),
+        apiGet(`/tenders/${params.tender_id}/prep-approvals`).catch(() => ({ approvals: [] })),
+        apiGet(`/tenders/${params.tender_id}/prep-return-notes`).catch(() => ({ notes: [] })),
+        apiGet(`/tenders/${params.tender_id}/prep-reject-notes`).catch(() => ({ notes: [] })),
+        apiGet(`/tenders/${params.tender_id}/publishing-data?t=${Date.now()}`).catch((e) => { console.error('Failed to load publishing data:', e); return null; })
+      ]);
+      setData(t);
+      setCopy(c);
+      setTeamNotes(Array.isArray(notes) ? notes : []);
+      // Transform approvals: extract user info and flatten structure
+      const transformedApprovals = (approv?.approvals || []).map((approval: any) => ({
+        userId: approval.userId,
+        fullName: approval.user?.firstName && approval.user?.lastName ? `${approval.user.firstName} ${approval.user.lastName}` : approval.user?.email || "Unknown",
+        email: approval.user?.email || "",
+        decision: approval.decision || "PENDING",
+        notes: approval.notes,
+        decidedAt: approval.decidedAt,
+      }));
+      setApprovals(transformedApprovals);
+      // Set all notes (newest first)
+      setAllReturnNotes((retNotes?.notes || []).reverse());
+      setAllRejectNotes((rejNotes?.notes || []).reverse());
+      // Also set latest for compatibility
+      setReturnNotes(retNotes?.reason || "");
+      setRejectNotes(rejNotes?.reason || "");
+      // Load publishing data if available
+      if (pubData?.section0Data) {
+        const contact = pubData.section0Data.clarification_contact || {};
+        const buyer = pubData.section0Data.buyer_information || {};
+        const metadata = pubData.section0Data.tender_metadata || {};
+        setPublishingData({
+          tender_number: metadata.tender_number || (t?.tender_id ? `TEN-${String(t.tender_id).padStart(5, "0")}` : ""),
+          publication_tender_number: metadata.publication_tender_number || "",
+          tender_title: metadata.tender_title || c?.title || "",
+          tender_description: metadata.tender_description || c?.description || "",
+          submission_deadline_date: metadata.submission_deadline_date || "",
+          submission_deadline_time: metadata.submission_deadline_time || "",
+          opening_date: metadata.opening_date || "",
+          letter_number: metadata.letter_number || "",
+          letter_date: metadata.letter_date || "",
+          tender_doc_price: metadata.tender_doc_price || "",
+          clarification_contact_name: contact.clarification_contact_name || "",
+          clarification_address: contact.clarification_address || "",
+          clarification_city: contact.clarification_city || "",
+          clarification_postal_code: contact.clarification_postal_code || "",
+          clarification_phone: contact.clarification_phone || "",
+          clarification_fax: contact.clarification_fax || "",
+          clarification_email: contact.clarification_email || "",
+          buyer_name: buyer.buyer_name || "",
+          buyer_address: buyer.buyer_address || "",
+          buyer_city: buyer.buyer_city || "",
+          buyer_postal_code: buyer.buyer_postal_code || "",
+          buyer_phone: buyer.buyer_phone || "",
+          buyer_fax: buyer.buyer_fax || "",
+          buyer_email: buyer.buyer_email || "",
+          buyer_country: buyer.buyer_country || "",
+        });
+      } else {
+        // Auto-populate with defaults
+        setPublishingData({
+          tender_number: t?.tender_id ? `TEN-${String(t.tender_id).padStart(5, "0")}` : "",
+          publication_tender_number: "",
+          tender_title: c?.title || "",
+          tender_description: c?.description || "",
+          submission_deadline_date: "",
+          submission_deadline_time: "",
+          opening_date: "",
+          letter_number: "",
+          letter_date: "",
+          tender_doc_price: "",
+          clarification_contact_name: "",
+          clarification_address: "",
+          clarification_city: "",
+          clarification_postal_code: "",
+          clarification_phone: "",
+          clarification_fax: "",
+          clarification_email: "",
+          buyer_name: "",
+          buyer_address: "",
+          buyer_city: "",
+          buyer_postal_code: "",
+          buyer_phone: "",
+          buyer_fax: "",
+          buyer_email: "",
+          buyer_country: "",
+        });
+      }
+      // Load commodities from publishing data or use prep items
+      if (pubData?.section2Data?.commodities) {
+        setPublishingCommodities(pubData.section2Data.commodities);
+      } else {
+        // Auto-populate commodities from working items
+        const commodities = (w || []).map((item: any) => ({
+          commodity_item_number: String(item.itemNo || ""),
+          commodity_description: item.description || "",
+          commodity_quantity: item.quantity || 0,
+          commodity_unit: item.uom || "",
+          item_type: "MATERIAL",
+          date_of_delivery: item.dateOfDelivery || "",
+          unit_price: item.unitPrice || 0,
+          total_price: item.totalPrice || 0,
+          country_of_origin: item.countryOfOrigin || "",
+          currency: item.currency || "IQD",
+          quantity_increase_limit: 10,
+          quantity_decrease_limit: 10,
+        }));
+        setPublishingCommodities(commodities);
+      }
+      // Create a map of requisitionItemId -> itemNo from copy items
+      const copyItemsMap = new Map<number, number>();
+      (c?.items || []).forEach((item: any, idx: number) => {
+        if (item.requisitionItemId) {
+          copyItemsMap.set(item.requisitionItemId, idx + 1);
+        }
+      });
+
+      const items = Array.isArray(w) && w.length > 0 
+        ? w.map((item: any) => ({
+            itemNo: item.itemNo || copyItemsMap.get(item.requisitionItemId) || item.item_no,
+            description: item.description,
+            dateOfDelivery: item.dateOfDelivery || item.date_of_delivery,
+            uom: item.uom,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice || item.unit_price,
+            totalPrice: item.totalPrice || item.total_price,
+            countryOfOrigin: item.countryOfOrigin || item.country_of_origin,
+            currency: item.currency,
+            requisitionItemId: item.requisitionItemId,
+          }))
+        : (c?.items || []).map((item: any, idx: number) => ({
+            itemNo: idx + 1,
+            description: item.description,
+            dateOfDelivery: item.dateOfDelivery || item.date_of_delivery,
+            uom: item.uom,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice || item.unit_price,
+            totalPrice: item.totalPrice || item.total_price,
+            countryOfOrigin: item.countryOfOrigin || item.country_of_origin,
+            currency: item.currency,
+            requisitionItemId: item.requisitionItemId,
+          }));
+      setWorkingItems(items);
+
+      
+      // Check if we need to set section8 data
+      if (pubData?.section8Data) {
+        setSection8Data(prev => ({ 
+          ...prev,
+          ...pubData.section8Data 
+        }));
+      }
+      
+
+    } catch (e: any) {
+
+      setError(e?.message || "Failed to load tender");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveItems = async () => {
+    // Validate lock is still owned before saving
+    await reloadLock();
+    
+    if (lockStatus !== "OWNED" || isIdle) {
+      setError("Lock was lost or you're idle. Cannot save.");
+      return;
+    }
+    
+    // Validate UOM and Quantity are not empty
+    for (let i = 0; i < workingItems.length; i++) {
+      const item = workingItems[i];
+      if (!item.uom || String(item.uom).trim() === "") {
+        setError(`Item ${i + 1}: UOM is required`);
+        return;
+      }
+      if (item.quantity === null || item.quantity === undefined || item.quantity === "" || item.quantity === 0) {
+        setError(`Item ${i + 1}: Quantity is required`);
+        return;
+      }
+    }
+    
+    setSaving(true);
+    setError("");
+    try {
+      await apiPost(`/tenders/${params.tender_id}/items`, { items: workingItems });
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to save items");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateItem = (idx: number, field: string, value: any) => {
+    const updated = [...workingItems];
+    updated[idx] = { ...updated[idx], [field]: value };
+    setWorkingItems(updated);
+  };
+
+  const deleteItem = (idx: number) => {
+    setWorkingItems(workingItems.filter((_, i) => i !== idx));
+  };
+
+  const addItem = () => {
+    // Calculate max itemNo from both working items and requisition copy items
+    let maxItemNo = 0;
+    
+    // Check working items
+    workingItems.forEach((item) => {
+      const num = item.itemNo ? Number(item.itemNo) : 0;
+      if (num > maxItemNo) maxItemNo = num;
+    });
+    
+    // Check copy items (requisition)
+    if (copy?.items) {
+      copy.items.forEach((item: any) => {
+        const num = item.itemNo ? Number(item.itemNo) : 0;
+        if (num > maxItemNo) maxItemNo = num;
+      });
+    }
+    
+    setWorkingItems([
+      ...workingItems,
+      {
+        itemNo: maxItemNo + 1,
+        description: "",
+        dateOfDelivery: "",
+        uom: "",
+        quantity: null,
+        unitPrice: 0,
+        totalPrice: 0,
+        countryOfOrigin: "",
+        currency: "",
+      },
+    ]);
+  };
+
+  useEffect(() => {
+    // Fetch currencies from admin panel
+    const fetchCurrencies = async () => {
+      try {
+        const response = await apiGet('/currencies');
+        setCurrencies(Array.isArray(response) ? response : response?.data || []);
+      } catch (e) {
+        console.error('Failed to fetch currencies:', e);
+      }
+    };
+
+    // Fetch suppliers for direct invitation
+    const fetchSuppliers = async () => {
+      try {
+        const response = await apiGet('/suppliers');
+        setSuppliers(Array.isArray(response) ? response : response?.data || []);
+      } catch (e) {
+        console.error('Failed to fetch suppliers:', e);
+      }
+    };
+    
+    load();
+    fetchCurrencies();
+    fetchSuppliers();
+    
+    // Auto-refresh every 15 seconds for manager notes (but not if editing publishing tab)
+    const intervalId = setInterval(() => {
+      if (activeTab !== "publishing" && activeTab !== "section8") {
+        load().catch(() => undefined);
+      }
+    }, 15_000);
+    return () => clearInterval(intervalId);
+  }, [params.tender_id, activeTab]);
+
+  const action = async (name: string, path: string, body: any = {}) => {
+    setError("");
+    setActing(name);
+    try {
+      await apiPost(path, body);
+      // Redirect to approval queue if manager approved, returned, or rejected
+      if (isManager && ["managerApprove", "return", "reject"].includes(name)) {
+        router.push("/tenders/waiting-approvals");
+      } else if (isGM && ["gmApprove", "gmReturn", "gmReject"].includes(name)) {
+        router.push("/gm-approvals");
+      } else {
+        await load();
+      }
+    } catch (e: any) {
+      setError(e?.message || "Action failed");
+    } finally {
+      setActing("");
+    }
+  };
+
+  const handleGMSignatureSubmit = async (signatureData: string) => {
+    await action("gmApprove", `/tenders/${params.tender_id}/gm-approve-and-sign`, {
+      signatureData,
+      signatureType: "MOUSE",
+    });
+  };
+
+  // Use the resolved tender_id from data if available, otherwise use URL param
+  const resolvedTenderId = data?.tender_id ? String(data.tender_id) : params.tender_id;
+  const tenderDisplay = data?.tender_id ? `TEN-${String(data.tender_id).padStart(5, "0")}` : params.tender_id;
+
+  return (
+    <RequireRoles anyOf={["TENDERING_OFFICER", "TENDER_APPROVAL", "GENERAL_MANAGER", "SYS_ADMIN"]} title={`Tender ${tenderDisplay}`}>
+      <InternalPage title={`Tender ${tenderDisplay}`}>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {data?.status && <span className="pill">Status: {data.status}</span>}
+          {data?.tender_id && (
+            <span className="pill">ID: TEN-{String(data.tender_id).padStart(5, "0")}</span>
+          )}
+          {data?.requisitionId && (
+            <span className="pill">Requisition: {data.requisitionId}</span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link className="btn" href="/tenders">Back</Link>
+          <Link className="btn" href={`/tenders/${data?.tender_id || params.tender_id}/clarifications`}>Clarifications & Addenda</Link>
+          <button className="btn" onClick={load} disabled={loading}>
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div style={{ color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
+
+      {/* Lock status */}
+      {lockStatus === "LOCKED" && lockInfo && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>⚠️ Edit locked:</strong> This tender is currently being edited by{" "}
+          <strong>{lockInfo.lockedByName || "another user"}</strong>.
+          You cannot make changes until they release the lock.
+        </div>
+      )}
+      {lockStatus === "OWNED" && !isIdle && !lockReleased && (
+        <div style={{ backgroundColor: "#dcfce7", color: "#166534", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #86efac" }}>
+          <strong>✅ Lock acquired:</strong> You are editing this tender. The lock will automatically release after 30 seconds of inactivity.
+        </div>
+      )}
+      {lockReleased && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>⚠️ Lock released due to inactivity:</strong> Please refresh the page to edit again.
+        </div>
+      )}
+
+      {/* Officer Approvals Status */}
+      {anyOfficerApproved && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>✓ Officer Approval(s):</strong> {approvals.filter((a: any) => a.decision === "APPROVED").map((a: any) => a.fullName).join(", ")} approved this tender. No changes can be made unless their approval is cancelled.
+        </div>
+      )}
+
+      {/* Return Notes - show at top */}
+      {allReturnNotes.length > 0 && (
+        <div style={{ backgroundColor: "#fef3c7", color: "#92400e", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fcd34d" }}>
+          <strong>📝 Manager Notes - Return for Changes</strong>
+          <div style={{ marginTop: 12 }}>
+            {allReturnNotes.map((note: any, idx: number) => (
+              <div key={idx} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: idx < allReturnNotes.length - 1 ? "1px solid rgba(0,0,0,0.1)" : "none" }}>
+                <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
+                  {note.createdAt ? new Date(note.createdAt).toLocaleString() : ""}
+                </div>
+                <div style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 13 }}>{note.reason}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Reject Notes - show at top */}
+      {allRejectNotes.length > 0 && (
+        <div style={{ backgroundColor: "#fee2e2", color: "#b91c1c", padding: 12, borderRadius: 8, marginBottom: 12, border: "1px solid #fca5a5" }}>
+          <strong>❌ Manager Notes - Tender Rejected</strong>
+          <div style={{ marginTop: 12 }}>
+            {allRejectNotes.map((note: any, idx: number) => (
+              <div key={idx} style={{ marginBottom: 12, paddingBottom: 12, borderBottom: idx < allRejectNotes.length - 1 ? "1px solid rgba(0,0,0,0.1)" : "none" }}>
+                <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>
+                  {note.createdAt ? new Date(note.createdAt).toLocaleString() : ""}
+                </div>
+                <div style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 13 }}>{note.reason}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tab selector - show if status allows publishing edits or viewing */}
+      {data && (data.status === "TENDER_PREP_DRAFT" || data.status === "TENDER_PREP_RETURNED" || data.status === "TENDER_PENDING_APPROVAL" || data.status === "GM_APPROVAL_PENDING") && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, borderBottom: "1px solid var(--border)", overflowX: "auto" }}>
+          <button
+            onClick={() => setActiveTab("prep")}
+            style={{
+              padding: "8px 16px",
+              border: "none",
+              background: activeTab === "prep" ? "var(--primary)" : "transparent",
+              color: activeTab === "prep" ? "white" : "inherit",
+              cursor: "pointer",
+              fontWeight: activeTab === "prep" ? "bold" : "normal",
+              borderBottom: activeTab === "prep" ? "2px solid var(--primary)" : "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Tender Preparation
+          </button>
+          <button
+            onClick={() => setActiveTab("publishing")}
+            style={{
+              padding: "8px 16px",
+              border: "none",
+              background: activeTab === "publishing" ? "var(--primary)" : "transparent",
+              color: activeTab === "publishing" ? "white" : "inherit",
+              cursor: "pointer",
+              fontWeight: activeTab === "publishing" ? "bold" : "normal",
+              borderBottom: activeTab === "publishing" ? "2px solid var(--primary)" : "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Publishing Variables
+          </button>
+          <button
+            onClick={() => setActiveTab("section8")}
+            style={{
+              padding: "8px 16px",
+              border: "none",
+              background: activeTab === "section8" ? "var(--primary)" : "transparent",
+              color: activeTab === "section8" ? "white" : "inherit",
+              cursor: "pointer",
+              fontWeight: activeTab === "section8" ? "bold" : "normal",
+              borderBottom: activeTab === "section8" ? "2px solid var(--primary)" : "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Bidding Variables
+          </button>
+        </div>
+      )}
+
+      {/* Show prep content or publishing content based on active tab */}
+      {activeTab === "prep" && (
+        <>
+              {/* Approval Actions */}
+          {data && (isOfficer || isManager) && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              {/* Officer Approve Button - show if in draft/returned status and user hasn't approved yet */}
+              {isOfficer && (data.status === "TENDER_PREP_DRAFT" || data.status === "TENDER_PREP_RETURNED") && 
+                !approvals.find((a: any) => a.userId === user?.id && a.decision === "APPROVED") && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => action("approve", `/tenders/${params.tender_id}/prep-approvals/officer-approve`, { notes: null })}
+                  disabled={acting === "approve" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot approve: page is locked by another user" : lockReleased ? "Cannot approve: lock was released due to inactivity" : undefined}
+                >
+                  {acting === "approve" ? "Approving..." : "✓ Approve"}
+                </button>
+              )}
+              
+              {/* Officer Cancel Approval Button - show if already approved and not manager approved yet */}
+              {isOfficer && data.status !== "TENDER_PREP_APPROVED" && 
+                approvals.find((a: any) => a.userId === user?.id && a.decision === "APPROVED") && (
+                <button
+                  className="btn"
+                  onClick={() => action("cancel", `/tenders/${params.tender_id}/prep-approvals/officer-cancel`, {})}
+                  disabled={acting === "cancel" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot cancel: page is locked by another user" : lockReleased ? "Cannot cancel: lock was released due to inactivity" : undefined}
+                  style={{ color: "#b91c1c" }}
+                >
+                  {acting === "cancel" ? "Cancelling..." : "✗ Cancel my approval"}
+                </button>
+              )}
+              
+              {/* Manager Approve Button - show if in pending approval status */}
+              {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => action("managerApprove", `/tenders/${params.tender_id}/prep-approvals/manager-approve`, {})}
+                  disabled={acting === "managerApprove" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot approve: page is locked by another user" : lockReleased ? "Cannot approve: lock was released due to inactivity" : undefined}
+                >
+                  {acting === "managerApprove" ? "Approving..." : "✓ Approve"}
+                </button>
+              )}
+              
+              {/* Manager Cancel Approval Button - show if status is GM_APPROVAL_PENDING */}
+              {isManager && data.status === "GM_APPROVAL_PENDING" && (
+                <button
+                  className="btn"
+                  onClick={() => action("managerCancel", `/tenders/${params.tender_id}/prep-approvals/manager-cancel`, {})}
+                  disabled={acting === "managerCancel" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot cancel: page is locked by another user" : lockReleased ? "Cannot cancel: lock was released due to inactivity" : undefined}
+                  style={{ color: "#b91c1c" }}
+                >
+                  {acting === "managerCancel" ? "Cancelling..." : "✗ Cancel my approval"}
+                </button>
+              )}
+              
+              {/* Manager Return Button - show if in pending approval status */}
+              {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                <button
+                  className="btn"
+                  onClick={() => setShowReturnModal(true)}
+                  disabled={acting !== "" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot return: page is locked by another user" : lockReleased ? "Cannot return: lock was released due to inactivity" : undefined}
+                >
+                  ↩️ Return for Changes
+                </button>
+              )}
+              
+              {/* Manager Reject Button - show if in pending approval status */}
+              {isManager && data.status === "TENDER_PENDING_APPROVAL" && (
+                <button
+                  className="btn"
+                  onClick={() => setShowRejectModal(true)}
+                  disabled={acting !== "" || lockStatus === "LOCKED" || lockReleased}
+                  title={lockStatus === "LOCKED" ? "Cannot reject: page is locked by another user" : lockReleased ? "Cannot reject: lock was released due to inactivity" : undefined}
+                  style={{ color: "#b91c1c" }}
+                >
+                  ✗ Reject & Close
+                </button>
+              )}
+            </div>
+          )}
+
+          {loading && !data ? (
+            <p>Loading…</p>
+          ) : !data ? (
+            <p>Not found.</p>
+          ) : (
+            <>
+              
+              {copy?.items && copy.items.length > 0 && (
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <h3 style={{ marginTop: 0 }}>Original Requisition Items (Read-only)</h3>
+                  <div style={{ overflowX: "auto" }}>
+                    <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse", minWidth: 900 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", background: "var(--surface-2)", fontSize: "12px" }}>
+                          <th>Item No.</th>
+                          <th>Description</th>
+                          <th>Date of Delivery</th>
+                          <th>UOM</th>
+                          <th>Quantities</th>
+                          <th>Unit Price DDP</th>
+                          <th>Total Price</th>
+                          <th>Country of Origin</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {copy.items.map((item: any, idx: number) => (
+                          <tr key={idx} style={{ borderTop: "1px solid var(--border)", fontSize: "12px" }}>
+                            <td style={{ textAlign: "center" }}>{item.itemNo || "—"}</td>
+                            <td>{item.description || "—"}</td>
+                            <td>{item.dateOfDelivery || "—"}</td>
+                            <td>{item.uom || "—"}</td>
+                            <td style={{ textAlign: "center" }}>{item.quantity || "—"}</td>
+                            <td style={{ textAlign: "left" }}>{item.unitPrice ? `${item.currency || ""} ${item.unitPrice.toLocaleString()}` : "—"}</td>
+                            <td style={{ textAlign: "left" }}>{item.totalPrice ? `${item.currency || ""} ${item.totalPrice.toLocaleString()}` : "—"}</td>
+                            <td>{item.countryOfOrigin || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {workingItems && workingItems.length > 0 && (
+                <div className="card" style={{ marginBottom: 12 }}>
+                  <h3 style={{ marginTop: 0 }}>Items (Editable)</h3>
+                  <div style={{ overflowX: "auto" }}>
+                  <table width="100%" cellPadding={8} style={{ borderCollapse: "collapse", minWidth: 1200 }}>
+                    <thead>
+                      <tr style={{ textAlign: "left", fontSize: "12px" }}>
+                        <th>Item No.</th>
+                        <th>Description</th>
+                        <th>Date of Delivery</th>
+                        <th>UOM</th>
+                        <th>Quantities</th>
+                        <th>Unit Price DDP</th>
+                        <th>Total Price</th>
+                        <th>Country of Origin</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workingItems.map((item: any, idx: number) => (
+                        <tr key={idx} style={{ borderTop: "1px solid var(--border)", fontSize: "12px" }}>
+                          <td style={{ textAlign: "center", fontWeight: "bold", color: "#666" }}>{item.itemNo || "—"}</td>
+                          <td><input type="text" className="input" value={item.description || ""} onChange={(e) => updateItem(idx, "description", e.target.value)} style={{ width: "100%", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="text" className="input" value={item.dateOfDelivery || ""} onChange={(e) => updateItem(idx, "dateOfDelivery", e.target.value)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="text" className="input" value={item.uom || ""} onChange={(e) => updateItem(idx, "uom", e.target.value)} style={{ width: "70px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="number" className="input" value={item.quantity ?? ""} onChange={(e) => updateItem(idx, "quantity", e.target.value ? parseFloat(e.target.value) : null)} style={{ width: "80px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="number" className="input" value={item.unitPrice || 0} onChange={(e) => updateItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="number" className="input" value={item.totalPrice || 0} onChange={(e) => updateItem(idx, "totalPrice", parseFloat(e.target.value) || 0)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td><input type="text" className="input" value={item.countryOfOrigin || ""} onChange={(e) => updateItem(idx, "countryOfOrigin", e.target.value)} style={{ width: "100px", padding: 2 }} disabled={!canEdit} title={!canEdit ? "Cannot edit: page is locked by another user" : undefined} /></td>
+                          <td style={{ textAlign: "center" }}><button className="btn btn-sm" onClick={() => deleteItem(idx)} style={{ padding: "2px 6px", fontSize: "11px", background: "#dc2626", color: "white" }} disabled={!canEdit} title={!canEdit ? "Cannot delete: page is locked by another user" : undefined}>Delete</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={saveItems}
+                      disabled={saving || !canEdit}
+                      title={!canEdit ? "Cannot save: page is locked by another user" : undefined}
+                    >
+                      {saving ? "Saving..." : "Save Items"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={addItem}
+                      disabled={saving || !canEdit}
+                      title={!canEdit ? "Cannot add item: page is locked by another user" : undefined}
+                    >
+                      + Add Item
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {/* Publishing Variables Tab */}
+      {activeTab === "publishing" && data && (
+        <>
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Tender Metadata</h3>
+            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, 1fr)" }}>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Publication Tender Number (XX/YYYY) *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.publication_tender_number || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, publication_tender_number: e.target.value }))}
+                  placeholder="e.g., 01/2025"
+                  maxLength={7}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Tender Title *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.tender_title || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, tender_title: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Tender Description</div>
+                <textarea
+                  className="input"
+                  value={publishingData.tender_description || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, tender_description: e.target.value }))}
+                  rows={4}
+                  style={{ width: "100%", whiteSpace: "pre-wrap" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Submission Deadline Date *</div>
+                <input
+                  className="input"
+                  type="date"
+                  value={publishingData.submission_deadline_date || ""}
+                  onChange={(e) => {
+                    const newDate = e.target.value;
+                    setPublishingData(prev => ({
+                      ...prev,
+                      submission_deadline_date: newDate,
+                      opening_date: newDate
+                    }));
+                  }}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Submission Deadline Time *</div>
+                <input
+                  className="input"
+                  type="time"
+                  value={publishingData.submission_deadline_time || ""}
+                  onChange={(e) => {
+                    setPublishingData(prev => ({
+                      ...prev,
+                      submission_deadline_time: e.target.value
+                    }));
+                  }}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Opening Date (defaults to submission date) *</div>
+                <input
+                  className="input"
+                  type="date"
+                  value={publishingData.opening_date || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, opening_date: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Letter Number</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.letter_number || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, letter_number: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Letter Date</div>
+                <input
+                  className="input"
+                  type="date"
+                  value={publishingData.letter_date || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, letter_date: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Tender Document Price</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ fontWeight: 600, color: "#555" }}>IQD</span>
+                  <input
+                    className="input"
+                    type="number"
+                    value={publishingData.tender_doc_price || ""}
+                    onChange={(e) => setPublishingData(prev => ({ ...prev, tender_doc_price: e.target.value }))}
+                    style={{ width: "100%" }}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                </div>
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Amount</div>
+                <div style={{ display: "flex", alignItems: "center", padding: "8px 12px", backgroundColor: "#f5f5f5", borderRadius: "4px", border: "1px solid #ddd" }}>
+                  {publishingData.tender_doc_price ? `IQD ${new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(publishingData.tender_doc_price)}` : "—"}
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Clarification Contact</h3>
+            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, 1fr)" }}>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Contact Name *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_contact_name || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_contact_name: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Email *</div>
+                <input
+                  className="input"
+                  type="email"
+                  value={publishingData.clarification_email || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_email: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Address *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_address || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_address: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Phone *</div>
+                <input
+                  className="input"
+                  type="tel"
+                  value={publishingData.clarification_phone || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_phone: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>City *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_city || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_city: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Postal Code</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_postal_code || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_postal_code: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Fax</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.clarification_fax || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, clarification_fax: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Buyer Information</h3>
+            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, 1fr)" }}>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Buyer Name *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_name || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_name: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Email *</div>
+                <input
+                  className="input"
+                  type="email"
+                  value={publishingData.buyer_email || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_email: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Address *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_address || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_address: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Phone *</div>
+                <input
+                  className="input"
+                  type="tel"
+                  value={publishingData.buyer_phone || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_phone: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>City *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_city || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_city: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Country *</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_country || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_country: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Postal Code</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_postal_code || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_postal_code: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+              <label style={{ gridColumn: "1 / -1" }}>
+                <div style={{ fontWeight: 800, marginBottom: 4 }}>Fax</div>
+                <input
+                  className="input"
+                  type="text"
+                  value={publishingData.buyer_fax || ""}
+                  onChange={(e) => setPublishingData(prev => ({ ...prev, buyer_fax: e.target.value }))}
+                  style={{ width: "100%" }}
+                  disabled={!canEdit}
+                  title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                setSavingPublishing(true);
+                setError("");
+                try {
+                  await apiPost(`/tenders/${params.tender_id}/publishing-data`, {
+                    section0Data: {
+                      tender_metadata: {
+                        tender_number: publishingData.tender_number,
+                        publication_tender_number: publishingData.publication_tender_number,
+                        tender_title: publishingData.tender_title,
+                        tender_description: publishingData.tender_description,
+                        submission_deadline_date: publishingData.submission_deadline_date,
+                        submission_deadline_time: publishingData.submission_deadline_time,
+                        opening_date: publishingData.opening_date,
+                        letter_number: publishingData.letter_number,
+                        letter_date: publishingData.letter_date,
+                        tender_doc_price: publishingData.tender_doc_price,
+                      },
+                      clarification_contact: {
+                        clarification_contact_name: publishingData.clarification_contact_name,
+                        clarification_address: publishingData.clarification_address,
+                        clarification_city: publishingData.clarification_city,
+                        clarification_postal_code: publishingData.clarification_postal_code,
+                        clarification_phone: publishingData.clarification_phone,
+                        clarification_fax: publishingData.clarification_fax,
+                        clarification_email: publishingData.clarification_email,
+                      },
+                      buyer_information: {
+                        buyer_name: publishingData.buyer_name,
+                        buyer_address: publishingData.buyer_address,
+                        buyer_city: publishingData.buyer_city,
+                        buyer_postal_code: publishingData.buyer_postal_code,
+                        buyer_phone: publishingData.buyer_phone,
+                        buyer_fax: publishingData.buyer_fax,
+                        buyer_email: publishingData.buyer_email,
+                        buyer_country: publishingData.buyer_country,
+                      },
+                    },
+                    section2Data: { commodities: publishingCommodities },
+                    section4Data: { commodities: publishingCommodities },
+                    section6Data: { commodities: publishingCommodities },
+                  });
+                  await load();
+                  setError("");
+                } catch (e: any) {
+                  setError(e?.message || "Failed to save");
+                } finally {
+                  setSavingPublishing(false);
+                }
+              }}
+              disabled={savingPublishing || !canEdit}
+              title={!canEdit ? "Cannot save: page is locked by another user" : undefined}
+            >
+              {savingPublishing ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Section 8 Tab - Company Variables */}
+      {activeTab === "section8" && data && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            {/* Card 1: Contract and Delivery */}
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Contract & Delivery</h3>
+              <div style={{ display: "grid", gap: 12 }}>
+                <label>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>Contract Language</div>
+                  <input
+                    className="input"
+                    type="text"
+                    value={section8Data.contract_language || ""}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, contract_language: e.target.value }))}
+                    style={{ width: "100%" }}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                </label>
+                <label>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>Delivery Location</div>
+                  <input
+                    className="input"
+                    type="text"
+                    value={section8Data.delivery_location || ""}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, delivery_location: e.target.value }))}
+                    style={{ width: "100%" }}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                </label>
+                <label>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>Warranty Period</div>
+                  <input
+                    className="input"
+                    type="text"
+                    value={section8Data.warranty_period || ""}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, warranty_period: e.target.value }))}
+                    style={{ width: "100%" }}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Card 2: Currency and Bid Bond */}
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Bidding Details</h3>
+              <div style={{ display: "grid", gap: 12 }}>
+                <label>
+                  <div style={{ fontWeight: 800, marginBottom: 4 }}>Bidding Currency</div>
+                  <select
+                    className="input"
+                    value={section8Data.bidding_currency || "IQD"}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, bidding_currency: e.target.value }))}
+                    style={{ width: "100%" }}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  >
+                    <option value="IQD">IQD - Iraqi Dinar</option>
+                    {currencies.map((curr: any) => (
+                      <option key={curr.code || curr.id} value={curr.code || curr.currency_code}>
+                        {curr.code || curr.currency_code} - {curr.name || curr.currency_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={section8Data.is_bid_bond_required || false}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, is_bid_bond_required: e.target.checked }))}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                  <div style={{ fontWeight: 800 }}>Bid Bond Required?</div>
+                </label>
+                {section8Data.is_bid_bond_required && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 }}>                    <label>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Currency</div>
+                      <select
+                        className="input"
+                        value={section8Data.bid_bond_currency || "IQD"}
+                        onChange={(e) => setSection8Data(prev => ({ ...prev, bid_bond_currency: e.target.value }))}
+                        style={{ width: "100%" }}
+                        disabled={!canEdit}
+                        title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                      >
+                        <option value="IQD">IQD - Iraqi Dinar</option>
+                        {currencies.map((curr: any) => (
+                          <option key={curr.code || curr.id} value={curr.code || curr.currency_code}>
+                            {curr.code || curr.currency_code} - {curr.name || curr.currency_name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Amount</div>
+                      <input
+                        className="input"
+                        type="number"
+                        value={section8Data.bid_bond_amount || ""}
+                        onChange={(e) => setSection8Data(prev => ({ ...prev, bid_bond_amount: e.target.value ? parseFloat(e.target.value) : null }))}
+                        style={{ width: "100%" }}
+                        disabled={!canEdit}
+                        title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                      />
+                      {section8Data.bid_bond_amount && (
+                        <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+                          {(section8Data.bid_bond_currency || "IQD")} {new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(section8Data.bid_bond_amount)}
+                        </div>
+                      )}
+                    </label>
+                  </div>
+                )}
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={section8Data.is_project_estimated_value || false}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, is_project_estimated_value: e.target.checked }))}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                  <div style={{ fontWeight: 800 }}>Project Estimated Value</div>
+                </label>
+                {section8Data.is_project_estimated_value && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 }}>
+                    <label>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Currency</div>
+                      <select
+                        className="input"
+                        value={section8Data.project_estimated_value_currency || "IQD"}
+                        onChange={(e) => setSection8Data(prev => ({ ...prev, project_estimated_value_currency: e.target.value }))}
+                        style={{ width: "100%" }}
+                        disabled={!canEdit}
+                        title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                      >
+                        <option value="IQD">IQD - Iraqi Dinar</option>
+                        {currencies.map((curr: any) => (
+                          <option key={curr.code || curr.id} value={curr.code || curr.currency_code}>
+                            {curr.code || curr.currency_code} - {curr.name || curr.currency_name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <div style={{ fontWeight: 800, marginBottom: 4 }}>Amount</div>
+                      <input
+                        className="input"
+                        type="number"
+                        value={section8Data.project_estimated_value_amount || ""}
+                        onChange={(e) => setSection8Data(prev => ({ ...prev, project_estimated_value_amount: e.target.value ? parseFloat(e.target.value) : null }))}
+                        style={{ width: "100%" }}
+                        disabled={!canEdit}
+                        title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                      />
+                      {section8Data.project_estimated_value_amount && (
+                        <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+                          {(section8Data.project_estimated_value_currency || "IQD")} {new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(section8Data.project_estimated_value_amount)}
+                        </div>
+                      )}
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Card 3: Bid Type */}
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Bid Type</h3>
+              <div style={{ display: "grid", gap: 12 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="radio"
+                    name="bid_type"
+                    value="public"
+                    checked={section8Data.bid_type === "public"}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, bid_type: e.target.value }))}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 800 }}>Public Tender</div>
+                    <div style={{ fontSize: 12, color: "#666" }}>Will be sent to the publishing system</div>
+                  </div>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="radio"
+                    name="bid_type"
+                    value="direct_invitation"
+                    checked={section8Data.bid_type === "direct_invitation"}
+                    onChange={(e) => setSection8Data(prev => ({ ...prev, bid_type: e.target.value }))}
+                    disabled={!canEdit}
+                    title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 800 }}>Direct Invitation</div>
+                    <div style={{ fontSize: 12, color: "#666" }}>Sent via email to selected suppliers</div>
+                  </div>
+                </label>
+                {section8Data.bid_type === "direct_invitation" && (
+                  <label>
+                    <div style={{ fontWeight: 800, marginBottom: 4 }}>Select Suppliers</div>
+                    <select
+                      className="input"
+                      multiple
+                      value={section8Data.selected_suppliers || []}
+                      onChange={(e) => {
+                        const selected = Array.from(e.target.selectedOptions, (option: any) => option.value);
+                        setSection8Data(prev => ({ ...prev, selected_suppliers: selected }));
+                      }}
+                      style={{ width: "100%", minHeight: "150px" }}
+                      disabled={!canEdit}
+                      title={!canEdit ? "Cannot edit: page is locked by another user" : undefined}
+                    >
+                      {suppliers.length === 0 ? (
+                        <option disabled>No suppliers available</option>
+                      ) : (
+                        suppliers.map((supplier: any) => (
+                          <option key={supplier.id || supplier.supplier_id} value={supplier.id || supplier.supplier_id}>
+                            {supplier.name || supplier.supplier_name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>Hold Ctrl/Cmd to select multiple suppliers</div>
+                  </label>
+                )}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                setSavingSection8(true);
+                setError("");
+                try {
+                  await apiPost(`/tenders/${params.tender_id}/publishing-data`, {
+                    section8Data,
+                  });
+                  await load();
+                  setError("");
+                } catch (e: any) {
+                  setError(e?.message || "Failed to save");
+                } finally {
+                  setSavingSection8(false);
+                }
+              }}
+              disabled={savingSection8 || !canEdit}
+              title={!canEdit ? "Cannot save: page is locked by another user" : undefined}
+            >
+              {savingSection8 ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </>
+      )}
+      
+      {/* DEBUG: Show current state */}
+      <div style={{backgroundColor: '#ffcccc', padding: 12, marginBottom: 12, borderRadius: 4}}>
+        <p><strong>OUTER DEBUG:</strong></p>
+        <p>isGM: {String(isGM)}</p>
+        <p>data?.status: {data?.status}</p>
+        <p>isGM && data?.status === 'GM_APPROVAL_PENDING': {String(isGM && data?.status === "GM_APPROVAL_PENDING")}</p>
+      </div>
+      
+      {/* GM Approval Section - Show before tabs */}
+      {isGM && data?.status === "GM_APPROVAL_PENDING" && (
+        <>
+          <div style={{backgroundColor: '#e0e0e0', padding: 12, marginBottom: 12, borderRadius: 4}}>
+            <p><strong>DEBUG GM Section:</strong></p>
+            <p>isGM: {String(isGM)}</p>
+            <p>data?.status: {data?.status}</p>
+            <p>data: {data ? 'EXISTS' : 'NULL'}</p>
+            <p>publishingData: {publishingData ? 'EXISTS' : 'NULL'}</p>
+            <p>publishingData?.tender_title: {publishingData?.tender_title || 'EMPTY'}</p>
+            <p>copy: {copy ? 'EXISTS' : 'NULL'}</p>
+          </div>
+          
+          {/* Publishing Data / Letter Section */}
+          {publishingData?.tender_title ? (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <h3 style={{ marginTop: 0 }}>Tender Publishing Details</h3>
+              <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(2, 1fr)" }}>
+                <div>
+                  <div style={{ fontSize: 12, color: "#666" }}>Title</div>
+                  <div style={{ fontWeight: 600 }}>{publishingData.tender_title || "—"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "#666" }}>Publication Tender Number</div>
+                  <div style={{ fontWeight: 600 }}>{publishingData.publication_tender_number || "—"}</div>
+                </div>
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div style={{ fontSize: 12, color: "#666" }}>Description</div>
+                  <div style={{ fontWeight: 600, whiteSpace: "pre-wrap" }}>{publishingData.tender_description || "—"}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "#666" }}>Submission Deadline</div>
+                  <div style={{ fontWeight: 600 }}>{publishingData.submission_deadline_date} {publishingData.submission_deadline_time || ""}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: "#666" }}>Opening Date</div>
+                  <div style={{ fontWeight: 600 }}>{publishingData.opening_date || "—"}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Signature Canvas */}
+          {showGMSignatureCanvas && (
+            <div className="card" style={{ marginBottom: 12 }}>
+              <h3 style={{ marginTop: 0 }}>Draw Your Signature</h3>
+              <SignatureCanvas onSubmit={handleGMSignatureSubmit} isLoading={acting === "gmApprove"} />
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div style={{ backgroundColor: '#fff3cd', padding: 12, marginBottom: 12, borderRadius: 4 }}>
+            <p><strong>DEBUG Action Buttons:</strong></p>
+            <p>showGMSignatureCanvas: {String(showGMSignatureCanvas)}</p>
+            <p>acting: {acting || 'EMPTY'}</p>
+          </div>
+          
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {!showGMSignatureCanvas && (
+              <button
+                className="btn btn-primary"
+                onClick={() => setShowGMSignatureCanvas(true)}
+                disabled={acting !== ""}
+              >
+                ✓ Approve & Sign
+              </button>
+            )}
+            {!showGMSignatureCanvas && (
+              <button
+                className="btn"
+                onClick={() => setShowReturnModal(true)}
+                disabled={acting !== ""}
+              >
+                ↩️ Return to Officers
+              </button>
+            )}
+            {!showGMSignatureCanvas && (
+              <button
+                className="btn"
+                onClick={() => setShowRejectModal(true)}
+                disabled={acting !== ""}
+                style={{ color: "#b91c1c" }}
+              >
+                ✗ Reject
+              </button>
+            )}
+            {showGMSignatureCanvas && (
+              <button
+                className="btn"
+                onClick={() => setShowGMSignatureCanvas(false)}
+                disabled={acting !== ""}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      
+      {/* Return Modal */}
+      {showReturnModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "white",
+            padding: 24,
+            borderRadius: 8,
+            maxWidth: 500,
+            width: "90%",
+          }}>
+            <h3 style={{ marginTop: 0 }}>Return for Changes</h3>
+            <p>Please provide notes for the officers about what changes are needed:</p>
+            <textarea
+              className="input"
+              value={returnModalReason}
+              onChange={(e) => setReturnModalReason(e.target.value)}
+              placeholder="Enter notes..."
+              style={{ width: "100%", minHeight: 120, marginBottom: 12, fontFamily: "monospace" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setShowReturnModal(false);
+                  setReturnModalReason("");
+                }}
+                disabled={acting !== ""}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  action("return", `/tenders/${params.tender_id}/prep-approvals/manager-return`, { reason: returnModalReason });
+                }}
+                disabled={acting !== "" || !returnModalReason.trim()}
+              >
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Reject Modal */}
+      {showRejectModal && (
+        <div style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: "rgba(0,0,0,0.5)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            backgroundColor: "white",
+            padding: 24,
+            borderRadius: 8,
+            maxWidth: 500,
+            width: "90%",
+          }}>
+            <h3 style={{ marginTop: 0, color: "#b91c1c" }}>Reject & Close Tender</h3>
+            <p style={{ color: "#b91c1c" }}>This action will close the tender. Please provide a reason:</p>
+            <textarea
+              className="input"
+              value={rejectModalReason}
+              onChange={(e) => setRejectModalReason(e.target.value)}
+              placeholder="Enter reason for rejection..."
+              style={{ width: "100%", minHeight: 120, marginBottom: 12, fontFamily: "monospace" }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                onClick={() => {
+                  setShowRejectModal(false);
+                  setRejectModalReason("");
+                }}
+                disabled={acting !== ""}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  action("reject", `/tenders/${params.tender_id}/prep-approvals/manager-reject`, { reason: rejectModalReason });
+                }}
+                disabled={acting !== "" || !rejectModalReason.trim()}
+                style={{ color: "white", backgroundColor: "#b91c1c" }}
+              >
+                Reject & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      </InternalPage>
+    </RequireRoles>
+  );
+}

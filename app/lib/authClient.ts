@@ -29,7 +29,7 @@ export function getCurrentUser() {
 
   const claims = decodeJwt(token);
   if (!claims || isJwtExpired(claims)) return null;
-
+  
   const rolesRaw = claims.roles ?? claims.role;
   const roles = Array.isArray(rolesRaw)
     ? rolesRaw
@@ -61,12 +61,12 @@ export function getCurrentUser() {
     "TENDER_APPROVAL",
     "TENDER_PUBLICATION_PREPARER",
     "TENDER_PUBLICATION_MANAGER",
-    "GM",
+    "GENERAL_MANAGER",
   ];
 
   return {
     id: claims.sub || "unknown",
-    name: claims.name,
+    fullName: claims.name,
     email: claims.email,
     roles: rolesNorm.filter((r: any) => allowedRoles.includes(r)) as any,
     departmentName: claims.departmentName || null,

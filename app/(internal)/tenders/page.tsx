@@ -26,28 +26,58 @@ export default function TendersPage() {
   const user = getCurrentUser();
   const roles = ((user as any)?.roles || []) as string[];
   const isSysAdmin = roles.includes("SYS_ADMIN");
-  const hasRequisitionOfficer = roles.includes("REQUISITION_OFFICER");
-  const hasRequisitionManager = roles.includes("REQUISITION_MANAGER");
   const hasTenderApproval = roles.includes("TENDER_APPROVAL");
   const hasTenderRole = roles.includes("TENDERING_OFFICER");
-  const isAdminOnly = isSysAdmin && !hasRequisitionOfficer && !hasRequisitionManager && !hasTenderApproval && !hasTenderRole;
 
   const displayStatus = (s: any) => {
     const v = String(s || "").trim();
     return v || "DRAFT";
   };
 
+  const getOfficerNames = (item: any) => {
+    const assignments = Array.isArray((item as any).officerAssignments)
+      ? (item as any).officerAssignments
+      : [];
+    return assignments
+      .map((a: any) => (a as any).user?.fullName || (a as any).user?.email || "")
+      .filter((name: string) => name)
+      .join(", ") || "—";
+  };
+
+  const getManagerName = (item: any) => {
+    const manager = (item as any).prepManager;
+    if (!manager) return "—";
+    return manager.fullName || manager.email || "—";
+  };
+
   useEffect(() => {
     const load = async () => {
       try {
         setError("");
-        // Load all tenders for admin
-        const allTenders = await apiGet("/tenders/admin/all");
+
+        // Choose endpoint based on role:
+        // - SYS_ADMIN or TENDER_APPROVAL: all tenders for the tenant
+        // - Tender officer (TENDERING_OFFICER): tenders assigned to them
+        let allTenders: any = [];
+        if (isSysAdmin || hasTenderApproval) {
+          allTenders = await apiGet("/tenders/admin/all");
+        } else if (hasTenderRole) {
+          allTenders = await apiGet("/tenders");
+        } else {
+          allTenders = [];
+        }
+
+		console.log('Raw API response:', allTenders); // ← Add this
+		console.log('Number of tenders from API:', allTenders?.length); // ← Add this
+
         const allTendersArray = Array.isArray(allTenders) ? allTenders : [];
-        
-        // Filter for Tender Preparation stage statuses
-        const prepStatuses = new Set(["TENDER_PREP_DRAFT", "TENDER_PREP_REVIEW", "DRAFT_TENDER_RETURN", "TENDER_REJECTED", "TENDER_PREP_APPROVED", "CLOSED"]);
-        const filtered = allTendersArray.filter((t) => prepStatuses.has(String(t.status || "")));
+
+		// Show any status that includes "TENDER" but exclude publishing statuses
+		const filtered = allTendersArray.filter((t) => {
+		  const status = String(t.status || "").toUpperCase();
+		  return status.includes("TENDER") && !status.includes("PUB");
+		});
+			  
         setTenders(filtered);
       } catch (e: any) {
         const msg = String(e?.message || "");
@@ -57,7 +87,7 @@ export default function TendersPage() {
       }
     };
     load();
-  }, []);
+  }, [isSysAdmin, hasTenderApproval, hasTenderRole]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -183,12 +213,12 @@ export default function TendersPage() {
 
           {error && <div style={{ color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
 
-          {statuses.length === 0 ? (
+          {!isSysAdmin && statuses.length === 0 ? (
             <p style={{ color: "var(--muted)" }}>No tenders found.</p>
-          ) : (
+          ) : !isSysAdmin ? (
             statuses.map((status) => {
               const statusItems = byStatus[status];
-              const isExpanded = expandedStatuses[status] ?? true;
+              const isExpanded = expandedStatuses[status] ?? false;
 
               return (
                 <div key={status} style={{ marginBottom: 16 }}>
@@ -223,8 +253,10 @@ export default function TendersPage() {
                       >
                         <thead>
                           <tr style={{ textAlign: "left", background: "#f9fafb" }}>
-                            <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>ID</th>
+                            <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>Tender #</th>
                             <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
+                            <th style={{ width: 180, borderBottom: "1px solid #d1d5db" }}>Officers</th>
+                            <th style={{ width: 120, borderBottom: "1px solid #d1d5db" }}>Manager</th>
                             <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>Created</th>
                           </tr>
                         </thead>
@@ -234,9 +266,15 @@ export default function TendersPage() {
                               key={item.id}
                               style={{ borderBottom: "1px solid #e5e7eb", background: "#fafafa" }}
                             >
-                              <td style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>TEN-{String(item.tenderNumber || 0).padStart(5, "0")}</td>
+                              <td style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>TEN-{String(item.tender_id || 0).padStart(5, "0")}</td>
                               <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                 {item.requisitionCopy?.title || item.requisition?.title || item.title || "(Untitled)"}
+                              </td>
+                              <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+                                {getOfficerNames(item)}
+                              </td>
+                              <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+                                {getManagerName(item)}
                               </td>
                               <td style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
                                 {fmtDate(item.createdAt)}
@@ -250,7 +288,78 @@ export default function TendersPage() {
                 </div>
               );
             })
-          )}
+          ) : isSysAdmin ? (
+            <div>
+              {statuses.map((status) => {
+                const statusItems = byStatus[status];
+                const isExpanded = expandedStatuses[status] ?? false;
+                return (
+                  <div key={status} style={{ marginBottom: 12 }}>
+                    <button
+                      type="button"
+                      onClick={() => toggleStatus(status)}
+                      style={{
+                        width: "100%",
+                        padding: "8px 12px",
+                        background: "#e5e7eb",
+                        borderRadius: 3,
+                        fontSize: 14,
+                        fontWeight: 500,
+                        border: "none",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 16 }}>{isExpanded ? "−" : "+"}</span>
+                      <span>{status.replace(/_/g, " ")} ({statusItems.length})</span>
+                    </button>
+                    {isExpanded && (
+                    <table
+                      width="100%"
+                      cellPadding={6}
+                      style={{ borderCollapse: "collapse", fontSize: 13, marginTop: 4 }}
+                    >
+                      <thead>
+                        <tr style={{ textAlign: "left", background: "#f9fafb" }}>
+                          <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>Tender #</th>
+                          <th style={{ borderBottom: "1px solid #d1d5db" }}>Title</th>
+                          <th style={{ width: 180, borderBottom: "1px solid #d1d5db" }}>Officers</th>
+                          <th style={{ width: 120, borderBottom: "1px solid #d1d5db" }}>Manager</th>
+                          <th style={{ width: 100, borderBottom: "1px solid #d1d5db" }}>Created</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statusItems.map((item) => (
+                          <tr
+                            key={item.id}
+                            style={{ borderBottom: "1px solid #e5e7eb", background: "#fafafa" }}
+                          >
+                            <td style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>TEN-{String(item.tender_id || 0).padStart(5, "0")}</td>
+                            <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {item.requisitionCopy?.title || item.requisition?.title || item.title || "(Untitled)"}
+                            </td>
+                            <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+                              {getOfficerNames(item)}
+                            </td>
+                            <td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>
+                              {getManagerName(item)}
+                            </td>
+                            <td style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                              {fmtDate(item.createdAt)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
         </div>
       </InternalPage>
     </RequireRoles>

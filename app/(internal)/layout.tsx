@@ -6,6 +6,7 @@ import { isAuthenticated } from "../lib/auth";
 import Sidebar from "../components/Sidebar";
 import SecondaryNav from "../components/SecondaryNav";
 import TeamNotesPanel from "../components/TeamNotesPanel";
+import TenderNotesPanel from "../components/TenderNotesPanel";
 import { getCurrentUser } from "../lib/authClient";
 
 export default function InternalLayout({
@@ -29,15 +30,11 @@ export default function InternalLayout({
   const roles = ((user as any)?.roles || []) as string[];
 
   const isSysAdmin = roles.includes("SYS_ADMIN");
+  const isGeneralManager = roles.includes("GENERAL_MANAGER");
 
   const isOfficer = useMemo(
-    () => roles.includes("REQUISITION_OFFICER") || roles.includes("TENDERING_OFFICER") || isSysAdmin,
-    [roles, isSysAdmin],
-  );
-
-  const isReqManager = useMemo(
-    () => roles.includes("REQUISITION_MANAGER") || isSysAdmin,
-    [roles, isSysAdmin],
+    () => roles.includes("TENDERING_OFFICER"),
+    [roles],
   );
 
   const isTenderManager = useMemo(
@@ -45,21 +42,21 @@ export default function InternalLayout({
     [roles, isSysAdmin],
   );
 
-  const isCommittee = useMemo(
-    () => false,
+  const isRequisitionOfficer = useMemo(
+    () => roles.includes("REQUISITION_OFFICER") || isSysAdmin,
     [roles, isSysAdmin],
   );
 
-  const isCommitteeChair = useMemo(
-    () => roles.includes("COMMITTEE_CHAIR") || isSysAdmin,
+  const isRequisitionManager = useMemo(
+    () => roles.includes("REQUISITION_MANAGER") || isSysAdmin,
     [roles, isSysAdmin],
   );
 
-  // Role dominance is additive: requester-only means requester *without* any other internal roles.
   const isRequesterOnly = useMemo(
-    () => roles.length === 1 && roles.includes("REQUESTER"),
-    [roles],
+    () => roles.includes("REQUESTER") && !isRequisitionOfficer && !isRequisitionManager && !isOfficer && !isTenderManager,
+    [roles, isRequisitionOfficer, isRequisitionManager, isOfficer, isTenderManager],
   );
+
 
   // Note: requesters are routed to /requisitions/status from the login page.
   // We no longer hard-redirect them here so that additional roles (e.g. tender
@@ -67,15 +64,6 @@ export default function InternalLayout({
   // to requisition status.
 
   if (!ready) return null;
-
-  // Requesters: draft + status experience (no sidebars)
-  if (isRequesterOnly) {
-    return (
-      <main style={{ padding: "1.25rem", minHeight: "100vh" }}>
-        {children}
-      </main>
-    );
-  }
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
@@ -94,11 +82,31 @@ export default function InternalLayout({
           <div style={{ marginRight: "1.25rem" }}>
             <Sidebar />
           </div>
-          <div>
-            <SecondaryNav />
-          </div>
+          {(!isGeneralManager || isSysAdmin) && (
+            <div>
+              <SecondaryNav />
+            </div>
+          )}
         </div>
         {(() => {
+		  // Hide team notes for requester-only users
+		  if (isRequesterOnly) return null;
+
+          // Show team notes on tender pages
+          const mTender = pathname.match(/\/tenders\/([^\/]+)/);
+          if (mTender) {
+            const tenderId = mTender[1];
+            // Known draft-like paths where we should NOT show notes
+            if (pathname === "/tenders") return null;
+            if (pathname === "/tenders/page") return null;
+            if (pathname.startsWith("/tenders/archive")) return null;
+            if (pathname.startsWith("/tenders/ready")) return null;
+            if (pathname.startsWith("/tenders/returned")) return null;
+            if (pathname.startsWith("/tenders/waiting-approvals")) return null;
+            if (pathname.startsWith("/tenders/to-sign")) return null;
+            return <TenderNotesPanel tenderId={tenderId} />;
+          }
+
           // Show team notes on any non-draft requisition page (from invitations onwards, including archive).
           // Support both requisition routes and submissions routes that carry a requisition id.
           // Examples: /requisitions/123/view, /requisitions/archive/123, /submissions/123, /submissions/123/view

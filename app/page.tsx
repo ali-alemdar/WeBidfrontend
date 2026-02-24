@@ -42,8 +42,14 @@ export default function HomePage() {
       const isSysAdmin = roles.includes("SYS_ADMIN");
       const isOfficer = roles.includes("REQUISITION_OFFICER") || roles.includes("TENDERING_OFFICER") || isSysAdmin;
       const isReqManager = roles.includes("REQUISITION_MANAGER") || isSysAdmin;
-      const isTenderManager = roles.includes("TENDER_APPROVAL") || isSysAdmin;
-      const isRequesterOnly = roles.includes("REQUESTER") && !isOfficer && !isReqManager && !isTenderManager;
+      // Treat tender publication roles as internal management roles so a user
+      // with REQUESTER + publication role is not considered "requester only".
+      const hasTenderPublicationRole =
+        roles.includes("TENDER_PUBLICATION_PREPARER") ||
+        roles.includes("TENDER_PUBLICATION_MANAGER");
+      const isTenderManager = roles.includes("TENDER_APPROVAL") || hasTenderPublicationRole || isSysAdmin;
+      const isRequesterOnly =
+        roles.includes("REQUESTER") && !isOfficer && !isReqManager && !isTenderManager;
 
       if (isRequesterOnly) {
         router.push("/requisitions/status");

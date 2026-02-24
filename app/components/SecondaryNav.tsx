@@ -38,6 +38,7 @@ export default function SecondaryNav() {
   const isTenderApproval = roles.includes("TENDER_APPROVAL") || isSysAdmin;
   const isTenderPublicationPreparer = roles.includes("TENDER_PUBLICATION_PREPARER") || isSysAdmin;
   const isTenderPublicationManager = roles.includes("TENDER_PUBLICATION_MANAGER") || isSysAdmin;
+  const isGeneralManager = roles.includes("GENERAL_MANAGER") || isSysAdmin;
   const canSeeApprovalQueue = isRequisitionOfficer || isRequisitionManager || isCommitteeChair;
 
   const sections: Section[] = [
@@ -46,12 +47,14 @@ export default function SecondaryNav() {
       title: "Requisitions",
       match: (p) => p.startsWith("/requisitions") || p.startsWith("/submissions"),
       items: ({ isSysAdmin, isSupplierManager }) => [
+        // My requests: officers/managers view requisitions they created
+        ...((isRequisitionOfficer || isRequisitionManager || isSysAdmin)
+          ? [{ href: "/requisitions/my-requests", label: "My requests" }]
+          : []),
         // List: main requisition list for officers/managers/sysadmin, all active statuses.
         ...((isRequisitionOfficer || isRequisitionManager || isSysAdmin)
           ? [{ href: "/requisitions/list", label: "List" }]
           : []),
-        // Create: only officers can create requisitions.
-        ...(isRequisitionOfficer ? [{ href: "/requisitions/create", label: "Create" }] : []),
         // Pricing: submissions hub (INVITATIONS_SENT, MANUAL_ENTRY, PRICES_RECEIVED, TENDER_PREP_DRAFT, etc.).
         // Visible only to requisition officers (and sysadmin), not managers.
         ...((isRequisitionOfficer || isSysAdmin)
@@ -62,8 +65,8 @@ export default function SecondaryNav() {
         // Archive: closed / tender-ready / purchase-ready / rejected.
         ...((isRequisitionOfficer || isRequisitionManager || isSysAdmin)
           ? [
-              { href: "/requisitions/archive", label: "Archive" },
               { href: "/requisitions/signature-ready", label: "Signature ready" },
+			  { href: "/requisitions/archive", label: "Archive" },
             ]
           : []),
         // Suppliers management moved under Admin section; not shown here.
@@ -79,38 +82,34 @@ export default function SecondaryNav() {
           ? [
               { href: "/tenders", label: "List" },
               { href: "/tenders/ready", label: "Ready" },
-              { href: "/tenders/to-sign", label: "Tenders to sign" },
-              { href: "/tenders/archive/mine", label: "Archive" },
+              { href: "/tenders/archive", label: "Archive" },
             ]
           : []),
         // Tender prep tabs for tender managers / admins.
         ...(isTenderApproval
           ? [
               // List: all tenders assigned to this manager (all statuses except completed),
-              // implemented server-side in /tenders/mine.
-              { href: "/tenders/mine", label: "List" },
+              // implemented server-side in /tenders.
+              { href: "/tenders", label: "List" },
               { href: "/tenders/waiting-approvals", label: "Approval queue" },
-              { href: "/tenders/to-sign", label: "Tenders to sign" },
-              { href: "/tenders/archive/mine", label: "Archive" },
+              { href: "/tenders/returned", label: "Returned" },
+			  { href: "/tenders/ready-for-publishing", label: "Ready for publishing" },
+              { href: "/tenders/archive", label: "Archive" },
             ]
           : []),
       ],
     },
     {
-      key: "tender-publishing",
-      title: "Tender Publishing",
-      match: (p) => p.startsWith("/tender-publishing"),
-      items: () => [
-        ...((isTenderPublicationPreparer || isTenderPublicationManager)
+      key: "gm",
+      title: "GM Approvals",
+      match: (p) => p.startsWith("/gm-"),
+      items: () =>
+        isGeneralManager
           ? [
-              { href: "/tender-publishing/list", label: "List" },
-              { href: "/tender-publishing/ready", label: "Ready" },
-              { href: "/tender-publishing/to-sign", label: "Tenders to sign" },
-              { href: "/tender-publishing/ready-to-publish", label: "Ready to Publish" },
-              { href: "/tender-publishing/archive", label: "Archive" },
+              { href: "/gm-approvals", label: "Pending" },
+              { href: "/gm-dashboard", label: "Dashboard" },
             ]
-          : []),
-      ],
+          : [],
     },
     {
       key: "audit",
@@ -149,17 +148,13 @@ export default function SecondaryNav() {
     },
   ];
 
-  // Do not show secondary nav on dashboard, requisitions, tenders, or tender-publishing pages
-  if (pathname === "/dashboard" || pathname === "/requisitions" || pathname === "/tenders" || pathname === "/tender-publishing") return null;
+  // Do not show secondary nav on dashboard and main list pages (only for SYS_ADMIN who sees the new admin view)
+  const isMainListPage = 
+    pathname === "/dashboard" || 
+    ((pathname === "/requisitions" || pathname === "/tenders" || pathname === "/submissions") && isSysAdmin);
+  if (isMainListPage) return null;
 
   let section = sections.find((s) => s.match(pathname));
-
-  // Fallback: if no section matches the current path, but the user
-  // has Tender Publishing roles, show the Tender Publishing section
-  // so they always have a navbar like other users/managers.
-  if (!section && (isTenderPublicationPreparer || isTenderPublicationManager)) {
-    section = sections.find((s) => s.key === "tender-publishing") || null as any;
-  }
 
   if (!section) return null;
 
