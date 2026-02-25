@@ -42,7 +42,7 @@ export default function GMApprovalsPage() {
   const filtered = useMemo(() => rows, [rows]);
 
   return (
-    <RequireRoles anyOf={["GENERAL_MANAGER", "SYS_ADMIN"]} title="GM / Approvals">
+    <RequireRoles anyOf={["GENERAL_MANAGER"]} title="GM / Approvals">
       <InternalPage title="GM / Approvals">
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
           <button className="btn" onClick={load} disabled={loading}>

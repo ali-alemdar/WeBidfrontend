@@ -43,13 +43,13 @@ export default function InternalLayout({
   );
 
   const isRequisitionOfficer = useMemo(
-    () => roles.includes("REQUISITION_OFFICER") || isSysAdmin,
-    [roles, isSysAdmin],
+    () => roles.includes("REQUISITION_OFFICER"),
+    [roles],
   );
 
   const isRequisitionManager = useMemo(
-    () => roles.includes("REQUISITION_MANAGER") || isSysAdmin,
-    [roles, isSysAdmin],
+    () => roles.includes("REQUISITION_MANAGER"),
+    [roles],
   );
 
   const isRequesterOnly = useMemo(

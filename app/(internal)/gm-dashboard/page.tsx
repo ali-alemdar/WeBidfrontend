@@ -5,6 +5,7 @@ import Link from "next/link";
 import InternalPage from "../../components/InternalPage";
 import RequireRoles from "../../components/RequireRoles";
 import { apiGet } from "../../lib/api";
+import { getCurrentUser } from "../../lib/authClient";
 
 interface ChartData {
   byDepartment: { [key: string]: number };
@@ -174,6 +175,7 @@ export default function GMDashboardPage() {
   const [data, setData] = useState<ChartData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [isGM, setIsGM] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -181,6 +183,11 @@ export default function GMDashboardPage() {
       setLoading(true);
       try {
         const stats = await apiGet("/tenders/gm-dashboard/stats");
+        const user = getCurrentUser();
+        const roles = user?.roles ?? [];
+        const isGeneralManager = roles.includes("GENERAL_MANAGER");
+        const isSysAdmin = roles.includes("SYS_ADMIN");
+        setIsGM(isGeneralManager && !isSysAdmin);
         setData(stats);
       } catch (e: any) {
         setError(e?.message || "Failed to load dashboard");
@@ -217,6 +224,7 @@ export default function GMDashboardPage() {
             </div>
 
             {/* Pending Tenders */}
+			{isGM && (
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Pending Approvals ({data.pending.length})</h3>
               {data.pending.length === 0 ? (
@@ -260,6 +268,7 @@ export default function GMDashboardPage() {
                 </div>
               )}
             </div>
+			)}
           </>
         ) : null}
       </InternalPage>
